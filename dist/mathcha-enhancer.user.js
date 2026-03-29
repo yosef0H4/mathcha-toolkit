@@ -136,6 +136,179 @@
       return aiTooltip2;
     };
     const mathcha = {
+      summarizeValue(value, depth = 0) {
+        if (value === void 0) return "[undefined]";
+        if (value === null) return null;
+        if (depth > 3) return typeof value;
+        if (Array.isArray(value)) return value.slice(0, 8).map((item) => this.summarizeValue(item, depth + 1));
+        if (typeof value === "object") {
+          const out = {};
+          for (const key of Object.keys(value).slice(0, 20)) {
+            out[key] = this.summarizeValue(value[key], depth + 1);
+          }
+          return out;
+        }
+        return value;
+      },
+      logRuntime(step, details) {
+        log(`[runtime] ${step}`, details ?? {});
+      },
+      getEditorInstance() {
+        const mathTypeElement = document.querySelector("math-type");
+        this.logRuntime("getEditorInstance:query", {
+          foundMathType: Boolean(mathTypeElement),
+          hasReactInstance: Boolean(mathTypeElement && "reactInstance" in mathTypeElement)
+        });
+        const editor = mathTypeElement?.reactInstance;
+        if (!editor || typeof editor !== "object") {
+          this.logRuntime("getEditorInstance:missing");
+          return null;
+        }
+        this.logRuntime("getEditorInstance:resolved", {
+          constructorName: editor.constructor?.name ?? null,
+          keys: Object.keys(editor).slice(0, 20)
+        });
+        return editor;
+      },
+      cloneSelection(value) {
+        return JSON.parse(JSON.stringify(value));
+      },
+      bumpDeepestCharIndex(selection, delta) {
+        const clone = this.cloneSelection(selection);
+        let cursor = clone;
+        while (cursor && typeof cursor === "object" && cursor.selected && typeof cursor.selected === "object") {
+          const child = cursor.selected;
+          if (typeof child.charIndex === "number" && child.key === void 0) {
+            child.charIndex += delta;
+            return clone;
+          }
+          cursor = child;
+        }
+        if (cursor && typeof cursor.charIndex === "number") {
+          cursor.charIndex += delta;
+        }
+        return clone;
+      },
+      inferCompositeAnchorSelection(compositeNode) {
+        const elementKeys = Object.keys(compositeNode.reactInstance?.props?.data?.elements ?? {});
+        const key = elementKeys[0];
+        if (!key) {
+          this.logRuntime("inferCompositeAnchorSelection:no-key", {
+            tagName: compositeNode.tagName,
+            className: compositeNode.className
+          });
+          return null;
+        }
+        this.logRuntime("inferCompositeAnchorSelection:resolved", {
+          tagName: compositeNode.tagName,
+          className: compositeNode.className,
+          key,
+          elementKeys
+        });
+        return {
+          key,
+          selected: { lineIndex: 0, charIndex: 0 }
+        };
+      },
+      findCompositeSelectionNode() {
+        const selection = window.getSelection();
+        const candidates = [];
+        const pushCandidate = (element) => {
+          if (!element) return;
+          candidates.push(element);
+        };
+        if (selection?.rangeCount) {
+          const range = selection.getRangeAt(0);
+          pushCandidate(range.startContainer instanceof Element ? range.startContainer : range.startContainer.parentElement);
+          const rect = range.getBoundingClientRect();
+          if (rect.width || rect.height) {
+            pushCandidate(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2));
+          }
+        }
+        pushCandidate(document.activeElement);
+        pushCandidate(document.querySelector("compositeblock:hover"));
+        this.logRuntime("findCompositeSelectionNode:candidates", {
+          count: candidates.length,
+          candidates: candidates.map((candidate) => ({
+            tagName: candidate.tagName,
+            className: candidate instanceof HTMLElement ? candidate.className : ""
+          }))
+        });
+        for (const candidate of candidates) {
+          const compositeNode = candidate?.closest?.("compositeblock");
+          if (compositeNode instanceof HTMLElement && typeof compositeNode.reactInstance?.props?.onSelectedChanged === "function") {
+            this.logRuntime("findCompositeSelectionNode:resolved", {
+              tagName: compositeNode.tagName,
+              className: compositeNode.className,
+              dataText: compositeNode.reactInstance?.props?.data?.text ?? null
+            });
+            return compositeNode;
+          }
+        }
+        this.logRuntime("findCompositeSelectionNode:missing");
+        return null;
+      },
+      async tryRuntimeLatexExtraction() {
+        this.logRuntime("tryRuntimeLatexExtraction:start");
+        const editor = this.getEditorInstance();
+        const latexIoHandler = editor?.latexIoHandler;
+        if (typeof latexIoHandler?.getSelectedLatex !== "function") {
+          this.logRuntime("tryRuntimeLatexExtraction:no-latex-handler");
+          return null;
+        }
+        const directLatex = latexIoHandler.getSelectedLatex("latex-latex", false)?.trim();
+        if (directLatex) {
+          this.logRuntime("tryRuntimeLatexExtraction:direct-hit", {
+            latexPreview: directLatex.slice(0, 120)
+          });
+          return directLatex;
+        }
+        this.logRuntime("tryRuntimeLatexExtraction:direct-empty");
+        const compositeNode = this.findCompositeSelectionNode();
+        const onSelectedChanged = compositeNode?.reactInstance?.props?.onSelectedChanged;
+        const anchorSelection = compositeNode ? this.inferCompositeAnchorSelection(compositeNode) : null;
+        if (!editor || typeof onSelectedChanged !== "function" || !anchorSelection || typeof editor.setSelection !== "function") {
+          this.logRuntime("tryRuntimeLatexExtraction:node-path-unavailable", {
+            hasEditor: Boolean(editor),
+            hasCompositeNode: Boolean(compositeNode),
+            hasOnSelectedChanged: typeof onSelectedChanged === "function",
+            hasAnchorSelection: Boolean(anchorSelection),
+            hasSetSelection: typeof editor?.setSelection === "function"
+          });
+          return null;
+        }
+        try {
+          editor.clearSelection?.();
+          editor.setCursorInputFocus?.(true);
+          editor.setCursorMathTypeFocus?.(true);
+          this.logRuntime("tryRuntimeLatexExtraction:node-anchor", {
+            anchorSelection: this.summarizeValue(anchorSelection)
+          });
+          onSelectedChanged(anchorSelection);
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          const start = editor.getContainerModel?.()?.cursorSelected;
+          if (!start) {
+            this.logRuntime("tryRuntimeLatexExtraction:no-start-selection");
+            return null;
+          }
+          const end = this.bumpDeepestCharIndex(start, 1);
+          this.logRuntime("tryRuntimeLatexExtraction:setSelection", {
+            start: this.summarizeValue(start),
+            end: this.summarizeValue(end)
+          });
+          editor.setSelection(start, end);
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          const replayedLatex = latexIoHandler.getSelectedLatex("latex-latex", false)?.trim();
+          this.logRuntime("tryRuntimeLatexExtraction:node-result", {
+            latexPreview: replayedLatex?.slice(0, 120) ?? "",
+            selectedJsonPreview: editor.getSelectedJson?.()?.slice(0, 220) ?? ""
+          });
+          return replayedLatex || null;
+        } catch (error) {
+          log("Runtime LaTeX extraction failed, falling back to DOM path", error);
+          return null;
+        }
+      },
       findLatexButton() {
         const strategies = [
           () => document.querySelector("ct-item.clipboard.copy-latex"),
@@ -185,13 +358,30 @@
       async copyToClipboard() {
         for (let attempt = 0; attempt < config.maxRetries + 1; attempt += 1) {
           try {
+            this.logRuntime("copyToClipboard:attempt", { attempt });
+            const runtimeLatex = await this.tryRuntimeLatexExtraction();
+            if (runtimeLatex) {
+              this.logRuntime("copyToClipboard:using-runtime", {
+                latexPreview: runtimeLatex.slice(0, 120)
+              });
+              await navigator.clipboard.writeText(runtimeLatex);
+              return runtimeLatex;
+            }
+            this.logRuntime("copyToClipboard:fallback-dom", { attempt });
             const success = await this.getLatex();
             if (!success) throw new Error("Failed to find LaTeX button");
             await new Promise((resolve) => setTimeout(resolve, config.delay.standard));
             const text = await navigator.clipboard.readText();
             if (!text) throw new Error("Clipboard is empty");
+            this.logRuntime("copyToClipboard:dom-success", {
+              latexPreview: text.slice(0, 120)
+            });
             return text;
           } catch (error) {
+            this.logRuntime("copyToClipboard:error", {
+              attempt,
+              error: error instanceof Error ? error.message : String(error)
+            });
             if (attempt === config.maxRetries) {
               const message = error instanceof Error ? error.message : "Unknown error";
               notify(`Copy failed: ${message}`, true);
