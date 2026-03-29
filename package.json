@@ -6,7 +6,10 @@
   "scripts": {
     "build": "node build.mjs",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "py:hello": "node pyodide-cli.mjs hello",
+    "py:install": "node pyodide-cli.mjs install",
+    "py:solve": "node pyodide-cli.mjs solve"
   },
   "devDependencies": {
     "@types/tampermonkey": "^5.0.4",

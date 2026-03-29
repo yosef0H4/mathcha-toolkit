@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Enhanced Mathcha.io - AI Integration
 // @namespace    http://tampermonkey.net/
-// @version      2.2
+// @version      2.3
 // @description  AI integration for Mathcha.io
 // @author       Your name
 // @match        https://*.mathcha.io/*

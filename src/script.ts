@@ -30,16 +30,6 @@ type AppConfig = {
   };
   maxRetries: number;
   aiServices: Record<AiServiceKey, AiService>;
-  pythonServer: {
-    url: string;
-    timeout: number;
-  };
-};
-
-type PythonServerResponse = {
-  success?: boolean;
-  answer?: string;
-  error?: string;
 };
 
 declare global {
@@ -51,12 +41,18 @@ declare global {
 (() => {
   "use strict";
 
+  const SCRIPT_VERSION = "2.3";
   const PYODIDE_VERSION = "0.29.3";
   const PYODIDE_INDEX_URL = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
   const PYODIDE_SCRIPT_URL = `${PYODIDE_INDEX_URL}pyodide.js`;
+  const EXTENDED_PARSER_VERSION = "1.11.0";
+  const ANTLR4_RUNTIME_VERSION = "4.13.2";
 
   type PyodideWindow = Window & typeof globalThis & { loadPyodide?: LoadPyodide };
   const pageWindow = unsafeWindow as PyodideWindow;
+  const logLabel = `[Mathcha Helper v${SCRIPT_VERSION}]`;
+  const log = (...args: unknown[]): void => console.log(logLabel, ...args);
+  const logError = (...args: unknown[]): void => console.error(logLabel, ...args);
 
   function loadMathJax(): Promise<void> {
     if (window.MathJax) return Promise.resolve();
@@ -107,10 +103,6 @@ declare global {
         name: "Google Gemini",
         url: "https://gemini.google.com/?q=%s"
       }
-    },
-    pythonServer: {
-      url: "http://localhost:5000/solve",
-      timeout: 10000
     }
   };
 
@@ -387,57 +379,6 @@ declare global {
       textarea.select();
     },
 
-    async pythonServer(latex: string): Promise<void> {
-      try {
-        notify("Sending to Python server...");
-        console.log("[Mathcha Helper] Sending LaTeX to Python server:", latex);
-        console.log("[Mathcha Helper] Request payload:", JSON.stringify({ latex }));
-
-        const response = await fetch(config.pythonServer.url, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Accept: "application/json"
-          },
-          body: JSON.stringify({ latex })
-        });
-
-        const status = response.status;
-        const responseText = await response.text();
-        console.log(`[Mathcha Helper] Server response (${status}):`, responseText);
-
-        let result: PythonServerResponse;
-        try {
-          result = JSON.parse(responseText) as PythonServerResponse;
-        } catch (error) {
-          console.error("[Mathcha Helper] Error parsing JSON response:", error);
-          throw new Error(`Server returned invalid JSON (Status ${status})`);
-        }
-
-        if (!response.ok) {
-          if (result.error) {
-            throw new Error(`Server error: ${result.error}`);
-          }
-
-          throw new Error(`Server responded with ${status}`);
-        }
-
-        if (result.success && result.answer) {
-          const answer = `$${result.answer}$`;
-          console.log("[Mathcha Helper] Formatted answer:", answer);
-          GM_setClipboard(answer);
-          notify(`Answer: ${answer}`);
-          return;
-        }
-
-        throw new Error("Server returned success but no answer");
-      } catch (error) {
-        console.error("[Mathcha Helper] Python server error:", error);
-        const message = error instanceof Error ? error.message : "Unknown error";
-        notify(`Error: ${message}`, true);
-      }
-    },
-
     symbolab(latex: string): void {
       const cleaned = latex.replace(/\$/g, "").trim();
       GM_openInTab(`https://www.symbolab.com/solver/step-by-step/${encodeURIComponent(cleaned)}`, {
@@ -449,6 +390,7 @@ declare global {
   const pythonRuntime = (() => {
     let pyodidePromise: Promise<PyodideInterface> | null = null;
     let scriptLoadPromise: Promise<void> | null = null;
+    let solverPromise: Promise<void> | null = null;
 
     const ensurePyodideScript = async (): Promise<void> => {
       if (typeof pageWindow.loadPyodide === "function") {
@@ -510,10 +452,69 @@ declare global {
       return pyodidePromise;
     };
 
+    const ensureSolver = async (): Promise<PyodideInterface> => {
+      const pyodide = await getPyodide();
+
+      if (!solverPromise) {
+        solverPromise = (async () => {
+          notify("Loading Python solver packages...");
+          await pyodide.loadPackage("micropip");
+
+          const micropip = pyodide.pyimport("micropip") as {
+            install: (packages: string[]) => Promise<void>;
+            destroy?: () => void;
+          };
+
+          try {
+            log(`Installing antlr4-python3-runtime==${ANTLR4_RUNTIME_VERSION}`);
+            await micropip.install([`antlr4-python3-runtime==${ANTLR4_RUNTIME_VERSION}`]);
+
+            log(`Installing latex2sympy2-extended[antlr4-13-2]==${EXTENDED_PARSER_VERSION}`);
+            await micropip.install([`latex2sympy2-extended[antlr4-13-2]==${EXTENDED_PARSER_VERSION}`]);
+          } finally {
+            micropip.destroy?.();
+          }
+
+          notify("Preparing local LaTeX solver...");
+          await pyodide.runPythonAsync(`
+from latex2sympy2_extended import latex2sympy
+from sympy import simplify, latex
+
+def mathcha_solve_latex(input_latex):
+    expr = latex2sympy(input_latex)
+    result = simplify(expr.doit().doit())
+    return latex(result)
+`);
+        })().catch((error) => {
+          solverPromise = null;
+          throw error;
+        });
+      }
+
+      await solverPromise;
+      return pyodide;
+    };
+
     return {
       async helloWorld(): Promise<string> {
         const pyodide = await getPyodide();
         return String(pyodide.runPython("'hello world from python'"));
+      },
+
+      async solveLatex(latexInput: string): Promise<string> {
+        const pyodide = await ensureSolver();
+        const globals = pyodide.globals as unknown as {
+          set: (key: string, value: unknown) => void;
+          delete: (key: string) => void;
+        };
+
+        globals.set("mathcha_input_latex", latexInput);
+        try {
+          const result = await pyodide.runPythonAsync("mathcha_solve_latex(mathcha_input_latex)");
+          return String(result);
+        } finally {
+          globals.delete("mathcha_input_latex");
+        }
       }
     };
   })();
@@ -608,11 +609,17 @@ declare global {
           shortcut: config.aiShortcuts.answer,
           handler: async () => {
             try {
-              console.log("[Mathcha Helper] Menu item: Solve with Python clicked");
+              log("Menu item: Solve with Python clicked");
               const latex = await mathcha.copyToClipboard();
-              await services.pythonServer(latex);
+              const answer = await pythonRuntime.solveLatex(latex);
+              const formattedAnswer = `$${answer}$`;
+              log("Formatted answer:", formattedAnswer);
+              GM_setClipboard(formattedAnswer);
+              notify(`Answer: ${formattedAnswer}`);
             } catch (error) {
-              console.error("[Mathcha Helper] Menu handler error:", error);
+              logError("Menu handler error:", error);
+              const message = error instanceof Error ? error.message : "Failed to solve LaTeX locally";
+              notify(`Local Python solve error: ${message}`, true);
             }
           }
         }
@@ -655,22 +662,28 @@ declare global {
 
     answer: async () => {
       try {
-        console.log("[Mathcha Helper] Auto-answer command triggered");
+        log("Auto-answer command triggered");
         const latex = await mathcha.copyToClipboard();
-        console.log("[Mathcha Helper] LaTeX extracted:", latex);
-        await services.pythonServer(latex);
+        log("LaTeX extracted:", latex);
+        const answer = await pythonRuntime.solveLatex(latex);
+        const formattedAnswer = `$${answer}$`;
+        log("Formatted answer:", formattedAnswer);
+        GM_setClipboard(formattedAnswer);
+        notify(`Answer: ${formattedAnswer}`);
       } catch (error) {
-        console.error("[Mathcha Helper] Auto-answer error:", error);
+        logError("Auto-answer error:", error);
+        const message = error instanceof Error ? error.message : "Failed to solve LaTeX locally";
+        notify(`Local Python solve error: ${message}`, true);
       }
     },
 
     pythonHello: async () => {
       try {
         const message = await pythonRuntime.helloWorld();
-        console.log("[Mathcha Helper] Python hello result:", message);
+        log("Python hello result:", message);
         notify(message);
       } catch (error) {
-        console.error("[Mathcha Helper] Python hello error:", error);
+        logError("Python hello error:", error);
         const message = error instanceof Error ? error.message : "Failed to run Python";
         notify(`Python runtime error: ${message}`, true);
       }
@@ -698,11 +711,11 @@ declare global {
         void commands.symbolab();
       } else if (event.key === config.aiShortcuts.answer) {
         event.preventDefault();
-        console.log("[Mathcha Helper] Answer shortcut pressed (Ctrl+Alt+/)");
+        log("Answer shortcut pressed (Ctrl+Alt+/)");
         void commands.answer();
       } else if (event.key === config.aiShortcuts.pythonHello) {
         event.preventDefault();
-        console.log("[Mathcha Helper] Python hello shortcut pressed (Ctrl+Alt+,)");
+        log("Python hello shortcut pressed (Ctrl+Alt+,)");
         void commands.pythonHello();
       }
     }
@@ -722,6 +735,7 @@ declare global {
 
   if (window.location.hostname.includes("mathcha.io")) {
     menuIntegration.injectCustomMenu();
+    log("Initializing userscript");
     void loadMathJax()
       .then(() => {
         notify("Mathcha Helper ready - Use Ctrl+Alt for AI features");
