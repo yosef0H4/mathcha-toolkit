@@ -47,6 +47,9 @@ declare global {
   const PYODIDE_SCRIPT_URL = `${PYODIDE_INDEX_URL}pyodide.js`;
   const EXTENDED_PARSER_VERSION = "1.11.0";
   const ANTLR4_RUNTIME_VERSION = "4.13.2";
+  const PERSIST_ROOT = "/mathcha-helper-cache";
+  const PERSIST_SITE_PACKAGES = `${PERSIST_ROOT}/site-packages`;
+  const PERSIST_STATE_FILE = `${PERSIST_ROOT}/cache-state.json`;
 
   type PyodideWindow = Window & typeof globalThis & { loadPyodide?: LoadPyodide };
   const pageWindow = unsafeWindow as PyodideWindow;
@@ -391,6 +394,211 @@ declare global {
     let pyodidePromise: Promise<PyodideInterface> | null = null;
     let scriptLoadPromise: Promise<void> | null = null;
     let solverPromise: Promise<void> | null = null;
+    let persistentFsPromise: Promise<void> | null = null;
+
+    const syncFs = async (pyodide: PyodideInterface, populate: boolean): Promise<void> => {
+      const fs = pyodide.FS as {
+        syncfs: (populateArg: boolean, callback: (error?: Error | null) => void) => void;
+      };
+
+      await new Promise<void>((resolve, reject) => {
+        fs.syncfs(populate, (error?: Error | null) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve();
+        });
+      });
+    };
+
+    const ensurePersistentFs = async (pyodide: PyodideInterface): Promise<void> => {
+      if (!persistentFsPromise) {
+        persistentFsPromise = (async () => {
+          const fs = pyodide.FS as {
+            mkdir: (path: string) => void;
+            mount: (type: unknown, opts: { root: string }, mountpoint: string) => void;
+            filesystems: { IDBFS: unknown };
+            analyzePath: (path: string) => { exists: boolean };
+          };
+
+          if (!fs.analyzePath(PERSIST_ROOT).exists) {
+            fs.mkdir(PERSIST_ROOT);
+          }
+
+          if (!fs.analyzePath(PERSIST_SITE_PACKAGES).exists) {
+            fs.mkdir(PERSIST_SITE_PACKAGES);
+          }
+
+          try {
+            fs.mount(fs.filesystems.IDBFS, { root: "." }, PERSIST_ROOT);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (!message.includes("already mounted")) {
+              throw error;
+            }
+          }
+
+          log("Syncing persistent Python cache from IndexedDB");
+          await syncFs(pyodide, true);
+        })().catch((error) => {
+          persistentFsPromise = null;
+          throw error;
+        });
+      }
+
+      return persistentFsPromise;
+    };
+
+    const readCacheState = async (
+      pyodide: PyodideInterface
+    ): Promise<{ status: "empty" | "installing" | "ready" | "broken"; version?: string }> => {
+      const fs = pyodide.FS as {
+        analyzePath: (path: string) => { exists: boolean };
+        readFile: (path: string, opts: { encoding: "utf8" }) => string;
+      };
+
+      if (!fs.analyzePath(PERSIST_STATE_FILE).exists) {
+        return { status: "empty" };
+      }
+
+      try {
+        return JSON.parse(fs.readFile(PERSIST_STATE_FILE, { encoding: "utf8" })) as {
+          status: "empty" | "installing" | "ready" | "broken";
+          version?: string;
+        };
+      } catch {
+        return { status: "broken" };
+      }
+    };
+
+    const writeCacheState = async (
+      pyodide: PyodideInterface,
+      state: { status: "empty" | "installing" | "ready" | "broken"; version?: string }
+    ): Promise<void> => {
+      const fs = pyodide.FS as {
+        writeFile: (path: string, data: string) => void;
+      };
+
+      fs.writeFile(PERSIST_STATE_FILE, JSON.stringify(state));
+      await syncFs(pyodide, false);
+    };
+
+    const ensurePersistentImports = async (pyodide: PyodideInterface): Promise<void> => {
+      await pyodide.runPythonAsync(`
+import importlib
+import sys
+
+cache_path = "${PERSIST_SITE_PACKAGES}"
+if cache_path not in sys.path:
+    sys.path.insert(0, cache_path)
+importlib.invalidate_caches()
+`);
+    };
+
+    const hasPersistedSolver = async (pyodide: PyodideInterface): Promise<boolean> => {
+      const result = await pyodide.runPythonAsync(`
+import importlib.util
+import importlib.metadata
+
+bool(
+    importlib.util.find_spec("latex2sympy2_extended")
+    and importlib.util.find_spec("antlr4")
+    and importlib.metadata.version("antlr4-python3-runtime")
+    and importlib.metadata.version("latex2sympy2-extended")
+)
+`);
+      return Boolean(result);
+    };
+
+    const validatePersistedSolver = async (pyodide: PyodideInterface): Promise<boolean> => {
+      const result = await pyodide.runPythonAsync(`
+import importlib
+import importlib.metadata
+import importlib.util
+
+try:
+    assert importlib.util.find_spec("latex2sympy2_extended")
+    assert importlib.util.find_spec("antlr4")
+    assert importlib.metadata.version("antlr4-python3-runtime") == "${ANTLR4_RUNTIME_VERSION}"
+    assert importlib.metadata.version("latex2sympy2-extended") == "${EXTENDED_PARSER_VERSION}"
+    from latex2sympy2_extended import latex2sympy
+    import antlr4
+    True
+except Exception:
+    False
+`);
+      return Boolean(result);
+    };
+
+    const clearPersistedSolver = async (pyodide: PyodideInterface): Promise<void> => {
+      await pyodide.runPythonAsync(`
+import pathlib
+import shutil
+
+target_root = pathlib.Path("${PERSIST_SITE_PACKAGES}")
+target_root.mkdir(parents=True, exist_ok=True)
+
+for name in (
+    "latex2sympy2_extended",
+    "antlr4",
+    "antlr4_python3_runtime-${ANTLR4_RUNTIME_VERSION}.dist-info",
+    "latex2sympy2_extended-${EXTENDED_PARSER_VERSION}.dist-info",
+):
+    path = target_root / name
+    if path.exists():
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+`);
+      await writeCacheState(pyodide, { status: "empty" });
+    };
+
+    const persistInstalledSolver = async (pyodide: PyodideInterface): Promise<void> => {
+      await pyodide.runPythonAsync(`
+import importlib
+import importlib.util
+import site
+import pathlib
+import shutil
+
+target_root = pathlib.Path("${PERSIST_SITE_PACKAGES}")
+target_root.mkdir(parents=True, exist_ok=True)
+
+site_packages_root = pathlib.Path(site.getsitepackages()[0])
+
+for module_name in ("latex2sympy2_extended", "antlr4"):
+    spec = importlib.util.find_spec(module_name)
+    if spec is None:
+        raise ImportError(f"Cannot find installed module: {module_name}")
+
+    if spec.submodule_search_locations:
+        source_path = pathlib.Path(next(iter(spec.submodule_search_locations)))
+        destination_path = target_root / source_path.name
+        if destination_path.exists():
+            shutil.rmtree(destination_path)
+        shutil.copytree(source_path, destination_path)
+    else:
+        source_path = pathlib.Path(spec.origin)
+        destination_path = target_root / source_path.name
+        shutil.copy2(source_path, destination_path)
+
+for metadata_dir in (
+    site_packages_root / "antlr4_python3_runtime-${ANTLR4_RUNTIME_VERSION}.dist-info",
+    site_packages_root / "latex2sympy2_extended-${EXTENDED_PARSER_VERSION}.dist-info",
+):
+    if metadata_dir.exists():
+        destination_path = target_root / metadata_dir.name
+        if destination_path.exists():
+            shutil.rmtree(destination_path)
+        shutil.copytree(metadata_dir, destination_path)
+
+importlib.invalidate_caches()
+`);
+      await writeCacheState(pyodide, { status: "ready", version: SCRIPT_VERSION });
+      log("Saving persistent Python cache to IndexedDB");
+    };
 
     const ensurePyodideScript = async (): Promise<void> => {
       if (typeof pageWindow.loadPyodide === "function") {
@@ -454,25 +662,59 @@ declare global {
 
     const ensureSolver = async (): Promise<PyodideInterface> => {
       const pyodide = await getPyodide();
+      await ensurePersistentFs(pyodide);
+      await ensurePersistentImports(pyodide);
+
+      notify("Loading core math packages...");
+      await pyodide.loadPackage(["mpmath", "sympy"]);
 
       if (!solverPromise) {
         solverPromise = (async () => {
-          notify("Loading Python solver packages...");
-          await pyodide.loadPackage("micropip");
+          const cacheState = await readCacheState(pyodide);
+          let cachedSolver = cacheState.status === "ready" && (await hasPersistedSolver(pyodide));
 
-          const micropip = pyodide.pyimport("micropip") as {
-            install: (packages: string[]) => Promise<void>;
-            destroy?: () => void;
-          };
+          if (cacheState.status === "installing" || cacheState.status === "broken") {
+            log(`Cached solver state is ${cacheState.status}, clearing broken cache`);
+            await clearPersistedSolver(pyodide);
+            cachedSolver = false;
+          }
 
-          try {
-            log(`Installing antlr4-python3-runtime==${ANTLR4_RUNTIME_VERSION}`);
-            await micropip.install([`antlr4-python3-runtime==${ANTLR4_RUNTIME_VERSION}`]);
+          if (cachedSolver) {
+            const validCache = await validatePersistedSolver(pyodide);
 
-            log(`Installing latex2sympy2-extended[antlr4-13-2]==${EXTENDED_PARSER_VERSION}`);
-            await micropip.install([`latex2sympy2-extended[antlr4-13-2]==${EXTENDED_PARSER_VERSION}`]);
-          } finally {
-            micropip.destroy?.();
+            if (validCache) {
+              log("Using cached solver packages from IndexedDB");
+            } else {
+              log("Cached solver validation failed, reinstalling");
+              await writeCacheState(pyodide, { status: "broken" });
+              await clearPersistedSolver(pyodide);
+              cachedSolver = false;
+            }
+          }
+
+          if (!cachedSolver) {
+            await writeCacheState(pyodide, { status: "installing", version: SCRIPT_VERSION });
+            notify("Loading Python solver packages...");
+            await pyodide.loadPackage("micropip");
+
+            const micropip = pyodide.pyimport("micropip") as {
+              install: (packages: string[]) => Promise<void>;
+              destroy?: () => void;
+            };
+
+            try {
+              log(`Installing antlr4-python3-runtime==${ANTLR4_RUNTIME_VERSION}`);
+              await micropip.install([`antlr4-python3-runtime==${ANTLR4_RUNTIME_VERSION}`]);
+
+              log(`Installing latex2sympy2-extended[antlr4-13-2]==${EXTENDED_PARSER_VERSION}`);
+              await micropip.install([`latex2sympy2-extended[antlr4-13-2]==${EXTENDED_PARSER_VERSION}`]);
+            } finally {
+              micropip.destroy?.();
+            }
+
+            await persistInstalledSolver(pyodide);
+          } else {
+            await writeCacheState(pyodide, { status: "ready", version: SCRIPT_VERSION });
           }
 
           notify("Preparing local LaTeX solver...");
@@ -487,6 +729,7 @@ def mathcha_solve_latex(input_latex):
 `);
         })().catch((error) => {
           solverPromise = null;
+          void writeCacheState(pyodide, { status: "broken", version: SCRIPT_VERSION });
           throw error;
         });
       }
