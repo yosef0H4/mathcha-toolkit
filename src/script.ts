@@ -272,6 +272,7 @@ declare global {
             isTextModeSelected?: () => boolean;
           };
           clearSelection?: () => void;
+          setSelected?: (selection: unknown) => void;
           setSelection?: (start: unknown, end: unknown) => void;
           setCursorInputFocus?: (focused: boolean) => void;
           setCursorMathTypeFocus?: (focused: boolean) => void;
@@ -307,6 +308,7 @@ declare global {
           isTextModeSelected?: () => boolean;
         };
         clearSelection?: () => void;
+        setSelected?: (selection: unknown) => void;
         setSelection?: (start: unknown, end: unknown) => void;
         setCursorInputFocus?: (focused: boolean) => void;
         setCursorMathTypeFocus?: (focused: boolean) => void;
@@ -499,6 +501,114 @@ declare global {
         mainModel: (editor?.state as { mainModel?: unknown } | undefined)?.mainModel ?? null,
         cursorSelected: editor?.getContainerModel?.()?.cursorSelected ?? null,
         extendedCursorSelected: editor?.getContainerModel?.()?.extendedCursorSelected ?? null
+      });
+    },
+
+    async extractSelectedLatexForSolver(): Promise<string> {
+      this.logRuntime("extractSelectedLatexForSolver:start");
+      const latex = await this.tryRuntimeLatexExtraction();
+      if (!latex) {
+        throw new Error("No runtime LaTeX selection available for solver");
+      }
+
+      const normalizedLatex = this.normalizeLatexForSolver(latex);
+      this.logRuntime("extractSelectedLatexForSolver:success", {
+        latexPreview: latex.slice(0, 120),
+        normalizedPreview: normalizedLatex.slice(0, 120)
+      });
+      return normalizedLatex;
+    },
+
+    normalizeLatexForSolver(latex: string): string {
+      let normalized = latex.trim();
+      normalized = this.normalizeImportLatex(normalized);
+      normalized = normalized.replace(/^\\displaystyle\s*/, "").trim();
+
+      const equationIndex = normalized.indexOf("=");
+      if (equationIndex >= 0) {
+        normalized = normalized.slice(0, equationIndex).trim();
+      }
+
+      this.logRuntime("normalizeLatexForSolver:complete", {
+        inputPreview: latex.slice(0, 120),
+        outputPreview: normalized.slice(0, 120)
+      });
+
+      if (!normalized) {
+        throw new Error("Selected LaTeX is empty after solver normalization");
+      }
+
+      return normalized;
+    },
+
+    getInsertionTargetSelection(
+      editor:
+        | {
+            getContainerModel?: () => {
+              cursorSelected?: unknown;
+              extendedCursorSelected?: unknown;
+            };
+          }
+        | null
+    ): unknown | null {
+      const containerModel = editor?.getContainerModel?.();
+      const insertionTarget = containerModel?.extendedCursorSelected ?? containerModel?.cursorSelected ?? null;
+      this.logRuntime("getInsertionTargetSelection:resolved", {
+        hasCursorSelected: Boolean(containerModel?.cursorSelected),
+        hasExtendedCursorSelected: Boolean(containerModel?.extendedCursorSelected),
+        insertionTarget: insertionTarget ? this.summarizeValue(insertionTarget) : null
+      });
+      return insertionTarget;
+    },
+
+    async insertMathAtSelectionEnd(latex: string, options?: { forceMathMode?: boolean }): Promise<void> {
+      const forceMathMode = options?.forceMathMode ?? true;
+      const editor = this.getEditorInstance();
+      const latexIoHandler = this.getLatexIoHandler(editor);
+      if (!editor || !latexIoHandler || typeof latexIoHandler.showImportFromLatex !== "function") {
+        throw new Error("Mathcha insert handler is unavailable");
+      }
+
+      const insertionTarget = this.getInsertionTargetSelection(editor);
+      if (!insertionTarget || typeof editor.setSelected !== "function") {
+        throw new Error("Unable to resolve insertion point from current selection");
+      }
+
+      editor.setCursorInputFocus?.(true);
+      editor.setCursorMathTypeFocus?.(true);
+      editor.setSelected(insertionTarget);
+      await new Promise<void>((resolve) => setTimeout(resolve, 30));
+
+      const beforeModel = this.getEditorModelFingerprint(editor as Record<string, unknown> | null);
+      latexIoHandler.showImportFromLatex();
+      const dialogElement = this.getImportDialogElement(latexIoHandler);
+      if (!dialogElement) {
+        throw new Error("Mathcha import runtime dialog element is unavailable");
+      }
+
+      const parsed = this.parseLatexWithRuntime(dialogElement, latex, { forceMathMode });
+      const payload = this.buildImportPayload(dialogElement, parsed, { forceMathMode });
+      this.logRuntime("insertMathAtSelectionEnd:parsed", {
+        latexPreview: latex.slice(0, 120),
+        effectiveMathMode: forceMathMode || dialogElement.props?.forMathMode || false,
+        payloadKind: Array.isArray(payload) ? "lines" : typeof payload
+      });
+
+      if (typeof latexIoHandler.onSuccessfulParse !== "function") {
+        throw new Error("Mathcha import apply handler is unavailable");
+      }
+
+      latexIoHandler.onSuccessfulParse(payload);
+      await new Promise<void>((resolve) => setTimeout(resolve, config.delay.standard * 2));
+
+      const afterModel = this.getEditorModelFingerprint(editor as Record<string, unknown> | null);
+      if (beforeModel === afterModel) {
+        throw new Error("Mathcha insert did not change the editor");
+      }
+
+      this.logRuntime("insertMathAtSelectionEnd:complete", {
+        changed: beforeModel !== afterModel,
+        dialogStillOpen: Boolean(document.querySelector(".import-latex"))
       });
     },
 
@@ -1684,12 +1794,12 @@ def mathcha_solve_latex(input_latex):
           handler: async () => {
             try {
               log("Menu item: Solve with Python clicked");
-              const latex = await mathcha.copyToClipboard();
+              const latex = await mathcha.extractSelectedLatexForSolver();
               const answer = await pythonRuntime.solveLatex(latex);
-              const formattedAnswer = `$${answer}$`;
-              log("Formatted answer:", formattedAnswer);
-              GM_setClipboard(formattedAnswer);
-              notify(`Answer: ${formattedAnswer}`);
+              const insertionLatex = `=${answer}`;
+              log("Formatted answer:", insertionLatex);
+              await mathcha.insertMathAtSelectionEnd(insertionLatex, { forceMathMode: true });
+              notify(`Answer inserted: ${insertionLatex}`);
             } catch (error) {
               logError("Menu handler error:", error);
               const message = error instanceof Error ? error.message : "Failed to solve LaTeX locally";
@@ -1737,13 +1847,13 @@ def mathcha_solve_latex(input_latex):
     answer: async () => {
       try {
         log("Auto-answer command triggered");
-        const latex = await mathcha.copyToClipboard();
+        const latex = await mathcha.extractSelectedLatexForSolver();
         log("LaTeX extracted:", latex);
         const answer = await pythonRuntime.solveLatex(latex);
-        const formattedAnswer = `$${answer}$`;
-        log("Formatted answer:", formattedAnswer);
-        GM_setClipboard(formattedAnswer);
-        notify(`Answer: ${formattedAnswer}`);
+        const insertionLatex = `=${answer}`;
+        log("Formatted answer:", insertionLatex);
+        await mathcha.insertMathAtSelectionEnd(insertionLatex, { forceMathMode: true });
+        notify(`Answer inserted: ${insertionLatex}`);
       } catch (error) {
         logError("Auto-answer error:", error);
         const message = error instanceof Error ? error.message : "Failed to solve LaTeX locally";
