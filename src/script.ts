@@ -504,19 +504,30 @@ declare global {
       });
     },
 
-    async extractSelectedLatexForSolver(): Promise<string> {
+    async extractSelectedLatexForSolver(): Promise<{ raw: string; normalized: string; hasEquationTail: boolean }> {
       this.logRuntime("extractSelectedLatexForSolver:start");
-      const latex = await this.tryRuntimeLatexExtraction();
-      if (!latex) {
+      const rawLatex = await this.tryRuntimeLatexExtraction();
+      if (!rawLatex) {
         throw new Error("No runtime LaTeX selection available for solver");
       }
 
-      const normalizedLatex = this.normalizeLatexForSolver(latex);
+      const hasEquationTail = this.hasEquationTail(rawLatex);
+      const normalizedLatex = this.normalizeLatexForSolver(rawLatex);
       this.logRuntime("extractSelectedLatexForSolver:success", {
-        latexPreview: latex.slice(0, 120),
-        normalizedPreview: normalizedLatex.slice(0, 120)
+        latexPreview: rawLatex.slice(0, 120),
+        normalizedPreview: normalizedLatex.slice(0, 120),
+        hasEquationTail
       });
-      return normalizedLatex;
+      return {
+        raw: rawLatex,
+        normalized: normalizedLatex,
+        hasEquationTail
+      };
+    },
+
+    hasEquationTail(latex: string): boolean {
+      const normalized = this.normalizeImportLatex(latex.trim()).replace(/^\\displaystyle\s*/, "").trim();
+      return normalized.includes("=");
     },
 
     normalizeLatexForSolver(latex: string): string {
@@ -1794,9 +1805,9 @@ def mathcha_solve_latex(input_latex):
           handler: async () => {
             try {
               log("Menu item: Solve with Python clicked");
-              const latex = await mathcha.extractSelectedLatexForSolver();
-              const answer = await pythonRuntime.solveLatex(latex);
-              const insertionLatex = `=${answer}`;
+              const solverInput = await mathcha.extractSelectedLatexForSolver();
+              const answer = await pythonRuntime.solveLatex(solverInput.normalized);
+              const insertionLatex = `${solverInput.hasEquationTail ? "" : "="}${answer}`;
               log("Formatted answer:", insertionLatex);
               await mathcha.insertMathAtSelectionEnd(insertionLatex, { forceMathMode: true });
               notify(`Answer inserted: ${insertionLatex}`);
@@ -1847,10 +1858,10 @@ def mathcha_solve_latex(input_latex):
     answer: async () => {
       try {
         log("Auto-answer command triggered");
-        const latex = await mathcha.extractSelectedLatexForSolver();
-        log("LaTeX extracted:", latex);
-        const answer = await pythonRuntime.solveLatex(latex);
-        const insertionLatex = `=${answer}`;
+        const solverInput = await mathcha.extractSelectedLatexForSolver();
+        log("LaTeX extracted:", solverInput.normalized);
+        const answer = await pythonRuntime.solveLatex(solverInput.normalized);
+        const insertionLatex = `${solverInput.hasEquationTail ? "" : "="}${answer}`;
         log("Formatted answer:", insertionLatex);
         await mathcha.insertMathAtSelectionEnd(insertionLatex, { forceMathMode: true });
         notify(`Answer inserted: ${insertionLatex}`);
