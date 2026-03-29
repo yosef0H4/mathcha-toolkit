@@ -1,0 +1,16 @@
+{
+  "name": "mathcha-enhancer",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "@types/tampermonkey": "^5.0.4",
+    "esbuild": "^0.25.3",
+    "typescript": "^5.8.3"
+  }
+}
