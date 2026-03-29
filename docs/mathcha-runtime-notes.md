@@ -7,6 +7,7 @@ These notes capture the current reverse-engineering result for Mathcha's `Copy L
 Primary target:
 
 - Replace the current DOM/context-menu driven `copyLatex` path in [src/script.ts](/Z:/files/projects/js/mathcha enhancer/src/script.ts) with a runtime-driven path.
+- Add a runtime-driven `Paste From LaTeX` path that reads the clipboard and inserts at the current cursor without using the context menu.
 
 Current status:
 
@@ -14,6 +15,8 @@ Current status:
 - Runtime LaTeX export invocation: solved
 - Non-DOM replay for one known math sample in the welcome document: solved
 - General arbitrary-selection mapping: not solved yet
+- Runtime import trigger via `latexIoHandler.showImportFromLatex()`: solved
+- Runtime import through direct dialog parser call + `onSuccessfulParse(...)`: solved
 
 ## Current Userscript Path
 
@@ -247,6 +250,49 @@ Avoid:
 - returning to DOM menu clicking as the primary strategy
 
 ## Supporting Artifacts
+
+## Paste From LaTeX Runtime Chain
+
+The real `From Latex` menu item is only a trigger. The useful runtime chain is:
+
+- menu `from-latex` calls `requestImportLatex()`
+- `requestImportLatex()` calls `latexIoHandler.showImportFromLatex()`
+- the import dialog parses text through `parseLatex(...)`
+- success flows into `onSuccessfulParse(...)`
+- insertion happens via `getController().insertLines(parsedLines, containerModel)` and `handleResult(...)`
+
+Key bundle regions from [latex words/1.js](/Z:/files/projects/js/mathcha enhancer/latex words/1.js):
+
+- `60585-60753`: dialog textarea change, `parseLatex(...)`, and `onOkClick`
+- `60955-60983`: `onSuccessfulParse(...)`
+- `61126-61152`: `showImportFromLatex()` and `renderImportLatexBox()`
+- `71768-71769`: context-menu import request delegates to `latexIoHandler.showImportFromLatex()`
+- `93176-93268`: editor wrapper methods for import
+
+Important observations:
+
+- `latexIoHandler` exposes `onSuccessfulParse` as a live runtime method and `showImportFromLatex()` on its prototype.
+- `latexIoHandler.renderImportLatexBox()` returns the real dialog component type (`Gn`).
+- `Gn.prototype.parseLatex(...)` is callable directly with a lightweight `{ props, wrapInMathContainer }` receiver.
+- The reliable direct path is:
+  1. call `latexIoHandler.showImportFromLatex()`
+  2. call `latexIoHandler.renderImportLatexBox()`
+  3. run `dialogType.prototype.parseLatex(normalizedLatex)` with the dialog props
+  4. convert the parsed result to the expected payload for text mode vs math mode
+  5. call `latexIoHandler.onSuccessfulParse(payload)`
+
+This uses Mathcha's own parser and insertion logic without waiting on the textarea debounce or clicking the dialog controls.
+
+Playwright proof:
+
+- [playwright/import-direct.spec.js](/Z:/files/projects/js/mathcha enhancer/playwright/import-direct.spec.js)
+- `npm run pw:runtime:import`
+
+Tested examples:
+
+- `2^2`
+- `\\frac{a}{b}`
+- `\\sqrt{a}`
 
 Recent generated reports:
 

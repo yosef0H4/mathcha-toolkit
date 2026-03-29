@@ -586,6 +586,156 @@ export async function replayCompositeNodeSelection(page, selector, options = {})
   );
 }
 
+export async function importLatexThroughRuntimeDialog(page, latex, options = {}) {
+  const { waitAfterOpenMs = 200, waitAfterInputMs = 400, waitAfterConfirmMs = 400 } = options;
+  return page.evaluate(
+    async ({ inputLatex, openDelay, inputDelay, confirmDelay }) => {
+      const editor = document.querySelector("math-type")?.reactInstance;
+      const handler = editor?.latexIoHandler;
+      if (!handler?.showImportFromLatex) {
+        return {
+          ok: false,
+          reason: "latexIoHandler.showImportFromLatex is unavailable"
+        };
+      }
+
+      const beforeModel = JSON.stringify(editor?.state?.mainModel ?? null);
+      editor.setCursorInputFocus?.(true);
+      editor.setCursorMathTypeFocus?.(true);
+      handler.showImportFromLatex();
+      await new Promise((resolve) => setTimeout(resolve, openDelay));
+
+      const root = document.querySelector(".import-latex");
+      const textarea = root?.querySelector("textarea");
+      const okButton = root?.querySelector("button.ok");
+      if (!(textarea instanceof HTMLTextAreaElement) || !(okButton instanceof HTMLButtonElement)) {
+        return {
+          ok: false,
+          reason: "Import dialog controls are unavailable"
+        };
+      }
+
+      textarea.focus();
+      textarea.value = inputLatex;
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      textarea.dispatchEvent(new Event("change", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, inputDelay));
+
+      const disabledBeforeConfirm = okButton.disabled;
+      if (disabledBeforeConfirm) {
+        return {
+          ok: false,
+          reason: "Mathcha parser disabled the confirm button",
+          textareaValue: textarea.value
+        };
+      }
+
+      okButton.click();
+      await new Promise((resolve) => setTimeout(resolve, confirmDelay));
+
+      const afterModel = JSON.stringify(editor?.state?.mainModel ?? null);
+      return {
+        ok: true,
+        changed: beforeModel !== afterModel,
+        dialogStillOpen: Boolean(document.querySelector(".import-latex")),
+        mainModelPreview: afterModel?.slice(0, 800) ?? "",
+        isTextModeSelected: editor?.getContainerModel?.()?.isTextModeSelected?.() ?? null
+      };
+    },
+    {
+      inputLatex: latex,
+      openDelay: waitAfterOpenMs,
+      inputDelay: waitAfterInputMs,
+      confirmDelay: waitAfterConfirmMs
+    }
+  );
+}
+
+export async function importLatexThroughDirectRuntime(page, latex, options = {}) {
+  const { waitAfterInsertMs = 400, forceMathMode = true } = options;
+  return page.evaluate(
+    async ({ inputLatex, insertDelay, importForceMathMode }) => {
+      const editor = document.querySelector("math-type")?.reactInstance;
+      const handler = editor?.latexIoHandler;
+      if (!editor || !handler?.showImportFromLatex || !handler?.renderImportLatexBox || !handler?.onSuccessfulParse) {
+        return {
+          ok: false,
+          reason: "Required runtime import hooks are unavailable"
+        };
+      }
+
+      editor.setCursorInputFocus?.(true);
+      editor.setCursorMathTypeFocus?.(true);
+      handler.showImportFromLatex();
+
+      const element = handler.renderImportLatexBox();
+      const DialogType = element?.type;
+      const parseLatex = DialogType?.prototype?.parseLatex;
+      if (typeof parseLatex !== "function") {
+        return {
+          ok: false,
+          reason: "Dialog parser function is unavailable"
+        };
+      }
+
+      const parserLike = {
+        props: {
+          ...(element.props ?? {}),
+          ...(importForceMathMode ? { forMathMode: true } : {})
+        },
+        wrapInMathContainer: DialogType.prototype.wrapInMathContainer
+      };
+      const parsed = parseLatex.call(parserLike, inputLatex);
+      if (!Array.isArray(parsed) || parsed.length === 0) {
+        return {
+          ok: false,
+          reason: "Parser returned no content"
+        };
+      }
+
+      const payload = (importForceMathMode || element.props?.forMathMode)
+        ? parsed?.[0]?.blocks?.[0]?.elements?.mathValue?.lines
+        : parsed;
+      if (!Array.isArray(payload) || payload.length === 0) {
+        return {
+          ok: false,
+          reason: "Parser returned an invalid payload",
+          forMathMode: element.props?.forMathMode ?? null
+        };
+      }
+
+      const before = JSON.stringify(editor.state?.mainModel ?? null);
+      handler.onSuccessfulParse(payload);
+      await new Promise((resolve) => setTimeout(resolve, insertDelay));
+      const afterModel = editor.state?.mainModel ?? null;
+      const after = JSON.stringify(afterModel);
+      const firstLineBlocks = afterModel?.lines?.[0]?.blocks ?? [];
+      const firstLineTexts = firstLineBlocks.map((block) => block?.text ?? "");
+      const normalizedInput = inputLatex.replace(/\s+/g, "");
+
+      return {
+        ok: true,
+        changed: before !== after,
+        dialogStillOpen: Boolean(document.querySelector(".import-latex")),
+        forMathMode: element.props?.forMathMode ?? null,
+        effectiveMathMode: Boolean(importForceMathMode || element.props?.forMathMode),
+        payloadLength: payload.length,
+        parsedPreview: JSON.stringify(parsed).slice(0, 500),
+        firstLineTexts,
+        firstLineHasComposite: firstLineBlocks.some((block) => block?.type === "composite"),
+        firstLineContainsLiteralInput: firstLineTexts.some(
+          (text) => typeof text === "string" && text.replace(/\s+/g, "").includes(normalizedInput)
+        )
+      };
+    },
+    {
+      inputLatex: latex,
+      insertDelay: waitAfterInsertMs,
+      importForceMathMode: forceMathMode
+    }
+  );
+}
+
 export async function readPageSummary(page) {
   return page.evaluate(() => {
     const safeDescribe = (value, depth = 0) => {

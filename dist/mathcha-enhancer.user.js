@@ -58,7 +58,8 @@
         copyLatex: "'",
         analyze: ";",
         symbolab: ".",
-        answer: "/"
+        answer: "/",
+        pasteFromLatex: ","
       },
       delay: {
         standard: 200,
@@ -131,11 +132,17 @@
       <div style="margin: 4px 0;">
         <kbd>${config.aiShortcuts.answer}</kbd> - Solve with Python
       </div>
+      <div style="margin: 4px 0;">
+        <kbd>${config.aiShortcuts.pasteFromLatex}</kbd> - Paste From LaTeX
+      </div>
     `;
       document.body.appendChild(aiTooltip2);
       return aiTooltip2;
     };
     const mathcha = {
+      getLatexIoHandler(editor) {
+        return editor?.latexIoHandler ?? null;
+      },
       summarizeValue(value, depth = 0) {
         if (value === void 0) return "[undefined]";
         if (value === null) return null;
@@ -169,6 +176,172 @@
           keys: Object.keys(editor).slice(0, 20)
         });
         return editor;
+      },
+      normalizeImportLatex(text) {
+        const trimmed = text.trim();
+        if (/^\$\$[\s\S]*\$\$$/.test(trimmed)) {
+          return trimmed.slice(2, -2).trim();
+        }
+        if (/^\$[\s\S]*\$/.test(trimmed)) {
+          return trimmed.slice(1, -1).trim();
+        }
+        return trimmed;
+      },
+      getImportDialog() {
+        const root = document.querySelector(".import-latex");
+        if (!(root instanceof HTMLElement)) {
+          this.logRuntime("getImportDialog:missing-root");
+          return null;
+        }
+        const textarea = root.querySelector("textarea");
+        const okButton = root.querySelector("button.ok");
+        if (!(textarea instanceof HTMLTextAreaElement) || !(okButton instanceof HTMLButtonElement)) {
+          this.logRuntime("getImportDialog:missing-controls", {
+            hasTextarea: textarea instanceof HTMLTextAreaElement,
+            hasOkButton: okButton instanceof HTMLButtonElement
+          });
+          return null;
+        }
+        return { root, textarea, okButton };
+      },
+      getImportDialogElement(latexIoHandler) {
+        const element = latexIoHandler?.renderImportLatexBox?.() ?? null;
+        if (!element) {
+          this.logRuntime("getImportDialogElement:missing");
+          return null;
+        }
+        this.logRuntime("getImportDialogElement:resolved", {
+          typeName: element.type?.name ?? null,
+          hasParseLatex: typeof element.type?.prototype?.parseLatex === "function",
+          forMathMode: element.props?.forMathMode ?? null
+        });
+        return element;
+      },
+      parseLatexWithRuntime(dialogElement, latex, options) {
+        const dialogType = dialogElement?.type;
+        const parseLatex = dialogType?.prototype?.parseLatex;
+        if (typeof parseLatex !== "function") {
+          throw new Error("Mathcha runtime parser is unavailable");
+        }
+        const forceMathMode = options?.forceMathMode ?? false;
+        const parserLike = {
+          props: {
+            ...dialogElement?.props ?? {},
+            ...forceMathMode ? { forMathMode: true } : {}
+          },
+          wrapInMathContainer: dialogType?.prototype?.wrapInMathContainer
+        };
+        const parsed = parseLatex.call(parserLike, latex);
+        if (!Array.isArray(parsed) || parsed.length === 0) {
+          throw new Error("Mathcha parser returned no content");
+        }
+        this.logRuntime("parseLatexWithRuntime:parsed", {
+          forMathMode: parserLike.props.forMathMode ?? null,
+          parsedLength: parsed.length
+        });
+        return parsed;
+      },
+      buildImportPayload(dialogElement, parsed, options) {
+        const forceMathMode = options?.forceMathMode ?? false;
+        if (forceMathMode || dialogElement?.props?.forMathMode) {
+          const mathLines = parsed[0]?.blocks?.[0]?.elements?.mathValue?.lines;
+          if (!Array.isArray(mathLines) || mathLines.length === 0) {
+            throw new Error("Mathcha runtime parser did not produce math-mode lines");
+          }
+          return mathLines;
+        }
+        return parsed;
+      },
+      getEditorModelFingerprint(editor) {
+        const safeStringify = (value) => {
+          const seen = /* @__PURE__ */ new WeakSet();
+          return JSON.stringify(value, (_key, currentValue) => {
+            if (typeof currentValue === "object" && currentValue !== null) {
+              if (seen.has(currentValue)) return "[circular]";
+              seen.add(currentValue);
+            }
+            return currentValue;
+          });
+        };
+        return safeStringify({
+          mainModel: editor?.state?.mainModel ?? null,
+          cursorSelected: editor?.getContainerModel?.()?.cursorSelected ?? null,
+          extendedCursorSelected: editor?.getContainerModel?.()?.extendedCursorSelected ?? null
+        });
+      },
+      async importFromLatexClipboard() {
+        const rawClipboardText = await navigator.clipboard.readText();
+        if (!rawClipboardText.trim()) {
+          throw new Error("Clipboard is empty");
+        }
+        const normalizedLatex = this.normalizeImportLatex(rawClipboardText);
+        const forceMathMode = true;
+        this.logRuntime("importFromLatexClipboard:start", {
+          rawPreview: rawClipboardText.slice(0, 120),
+          normalizedPreview: normalizedLatex.slice(0, 120),
+          forceMathMode
+        });
+        const editor = this.getEditorInstance();
+        const latexIoHandler = this.getLatexIoHandler(editor);
+        if (typeof latexIoHandler?.showImportFromLatex !== "function") {
+          throw new Error("Mathcha import handler is unavailable");
+        }
+        editor?.setCursorInputFocus?.(true);
+        editor?.setCursorMathTypeFocus?.(true);
+        const beforeModel = this.getEditorModelFingerprint(editor);
+        try {
+          latexIoHandler.showImportFromLatex();
+          const dialogElement = this.getImportDialogElement(latexIoHandler);
+          if (!dialogElement) {
+            throw new Error("Import runtime dialog element is unavailable");
+          }
+          const parsed = this.parseLatexWithRuntime(dialogElement, normalizedLatex, { forceMathMode });
+          const payload = this.buildImportPayload(dialogElement, parsed, { forceMathMode });
+          this.logRuntime("importFromLatexClipboard:direct-parse", {
+            forMathMode: dialogElement.props?.forMathMode ?? null,
+            effectiveMathMode: forceMathMode || dialogElement.props?.forMathMode || false,
+            payloadKind: Array.isArray(payload) ? "lines" : typeof payload
+          });
+          if (typeof latexIoHandler.onSuccessfulParse !== "function") {
+            throw new Error("Mathcha import apply handler is unavailable");
+          }
+          latexIoHandler.onSuccessfulParse(payload);
+        } catch (directError) {
+          this.logRuntime("importFromLatexClipboard:direct-failed", {
+            error: directError instanceof Error ? directError.message : String(directError)
+          });
+          latexIoHandler.showImportFromLatex();
+          await new Promise((resolve) => setTimeout(resolve, config.delay.standard));
+          const dialog = this.getImportDialog();
+          if (!dialog) {
+            throw new Error("Import dialog did not open");
+          }
+          dialog.textarea.focus();
+          dialog.textarea.value = normalizedLatex;
+          dialog.textarea.dispatchEvent(new Event("input", { bubbles: true }));
+          dialog.textarea.dispatchEvent(new Event("change", { bubbles: true }));
+          await new Promise((resolve) => setTimeout(resolve, config.delay.standard * 4));
+          this.logRuntime("importFromLatexClipboard:fallback-dialog-ready", {
+            isTextModeSelected: editor?.getContainerModel?.()?.isTextModeSelected?.() ?? null,
+            okDisabled: dialog.okButton.disabled,
+            textareaLength: dialog.textarea.value.length
+          });
+          if (dialog.okButton.disabled) {
+            throw new Error("Mathcha could not parse clipboard LaTeX");
+          }
+          dialog.okButton.click();
+        }
+        await new Promise((resolve) => setTimeout(resolve, config.delay.standard * 2));
+        const afterModel = this.getEditorModelFingerprint(editor);
+        const changed = beforeModel !== afterModel;
+        this.logRuntime("importFromLatexClipboard:complete", {
+          changed,
+          dialogStillOpen: Boolean(document.querySelector(".import-latex"))
+        });
+        if (!changed) {
+          throw new Error("Mathcha import did not change the editor");
+        }
+        return normalizedLatex;
       },
       cloneSelection(value) {
         return JSON.parse(JSON.stringify(value));
@@ -251,7 +424,7 @@
       async tryRuntimeLatexExtraction() {
         this.logRuntime("tryRuntimeLatexExtraction:start");
         const editor = this.getEditorInstance();
-        const latexIoHandler = editor?.latexIoHandler;
+        const latexIoHandler = this.getLatexIoHandler(editor);
         if (typeof latexIoHandler?.getSelectedLatex !== "function") {
           this.logRuntime("tryRuntimeLatexExtraction:no-latex-handler");
           return null;
@@ -1029,6 +1202,20 @@ def mathcha_solve_latex(input_latex):
         const lastAiService = GM_getValue("lastAiService", "claude") ?? "claude";
         const items = [
           {
+            text: "Paste From LaTeX",
+            shortcut: config.aiShortcuts.pasteFromLatex,
+            handler: async () => {
+              try {
+                const latex = await mathcha.importFromLatexClipboard();
+                notify(`Imported LaTeX: ${latex.slice(0, 40)}${latex.length > 40 ? "..." : ""}`);
+              } catch (error) {
+                logError("Menu handler import error:", error);
+                const message = error instanceof Error ? error.message : "Failed to import LaTeX";
+                notify(`Import error: ${message}`, true);
+              }
+            }
+          },
+          {
             text: "Analyze with AI",
             shortcut: config.aiShortcuts.analyze,
             handler: async () => {
@@ -1118,6 +1305,17 @@ def mathcha_solve_latex(input_latex):
           const message = error instanceof Error ? error.message : "Failed to solve LaTeX locally";
           notify(`Local Python solve error: ${message}`, true);
         }
+      },
+      pasteFromLatex: async () => {
+        try {
+          log("Paste From LaTeX command triggered");
+          const latex = await mathcha.importFromLatexClipboard();
+          notify(`Imported LaTeX: ${latex.slice(0, 40)}${latex.length > 40 ? "..." : ""}`);
+        } catch (error) {
+          logError("Paste From LaTeX error:", error);
+          const message = error instanceof Error ? error.message : "Failed to import LaTeX";
+          notify(`Import error: ${message}`, true);
+        }
       }
     };
     const aiTooltip = createTooltip();
@@ -1141,6 +1339,10 @@ def mathcha_solve_latex(input_latex):
           event.preventDefault();
           log("Answer shortcut pressed (Ctrl+Alt+/)");
           void commands.answer();
+        } else if (event.key === config.aiShortcuts.pasteFromLatex) {
+          event.preventDefault();
+          log("Paste From LaTeX shortcut pressed (Ctrl+Alt+,)");
+          void commands.pasteFromLatex();
         }
       }
     });
@@ -1163,7 +1365,7 @@ def mathcha_solve_latex(input_latex):
         logError("Background Python warmup failed:", error);
       });
       void loadMathJax().then(() => {
-        notify("Mathcha Helper ready - Use Ctrl+Alt for AI features");
+        notify("Mathcha Helper ready - Use Ctrl+Alt for AI + LaTeX features");
       }).catch(() => {
         notify("Mathcha Helper ready (LaTeX rendering not available)", true);
       });

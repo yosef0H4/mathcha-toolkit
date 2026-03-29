@@ -14,6 +14,7 @@
     "pw:api": "playwright test playwright/api-model.spec.js --config=playwright.config.mjs",
     "pw:runtime": "playwright test playwright/runtime-command.spec.js --config=playwright.config.mjs",
     "pw:runtime:direct": "playwright test playwright/runtime-direct.spec.js --config=playwright.config.mjs",
+    "pw:runtime:import": "playwright test playwright/import-direct.spec.js --config=playwright.config.mjs",
     "pw:baseline": "playwright test playwright/dom-baseline.spec.js --config=playwright.config.mjs",
     "pw:runtime:headed": "playwright test playwright/runtime-command.spec.js --config=playwright.config.mjs --headed",
     "py:hello": "node pyodide-cli.mjs hello",
