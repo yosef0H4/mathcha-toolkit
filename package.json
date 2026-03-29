@@ -11,6 +11,7 @@
   "devDependencies": {
     "@types/tampermonkey": "^5.0.4",
     "esbuild": "^0.25.3",
+    "pyodide": "^0.29.3",
     "typescript": "^5.8.3"
   }
 }

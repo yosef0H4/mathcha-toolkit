@@ -1,7 +1,11 @@
+import type { PyodideInterface } from "pyodide";
+
 type AiServiceKey = "claude" | "chatgpt" | "gemini";
-type CommandKey = "copyLatex" | "analyze" | "symbolab" | "answer";
+type CommandKey = "copyLatex" | "analyze" | "symbolab" | "answer" | "pythonHello";
 
 export {};
+
+type LoadPyodide = typeof import("pyodide").loadPyodide;
 
 type MathJaxConfig = {
   tex: {
@@ -47,6 +51,13 @@ declare global {
 (() => {
   "use strict";
 
+  const PYODIDE_VERSION = "0.29.3";
+  const PYODIDE_INDEX_URL = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
+  const PYODIDE_SCRIPT_URL = `${PYODIDE_INDEX_URL}pyodide.js`;
+
+  type PyodideWindow = Window & typeof globalThis & { loadPyodide?: LoadPyodide };
+  const pageWindow = unsafeWindow as PyodideWindow;
+
   function loadMathJax(): Promise<void> {
     if (window.MathJax) return Promise.resolve();
 
@@ -75,7 +86,8 @@ declare global {
       copyLatex: "'",
       analyze: ";",
       symbolab: ".",
-      answer: "/"
+      answer: "/",
+      pythonHello: ","
     },
     delay: {
       standard: 200,
@@ -157,6 +169,9 @@ declare global {
       </div>
       <div style="margin: 4px 0;">
         <kbd>${config.aiShortcuts.answer}</kbd> - Solve with Python
+      </div>
+      <div style="margin: 4px 0;">
+        <kbd>${config.aiShortcuts.pythonHello}</kbd> - Python Hello Test
       </div>
     `;
 
@@ -431,6 +446,78 @@ declare global {
     }
   };
 
+  const pythonRuntime = (() => {
+    let pyodidePromise: Promise<PyodideInterface> | null = null;
+    let scriptLoadPromise: Promise<void> | null = null;
+
+    const ensurePyodideScript = async (): Promise<void> => {
+      if (typeof pageWindow.loadPyodide === "function") {
+        return;
+      }
+
+      if (!scriptLoadPromise) {
+        scriptLoadPromise = new Promise<void>((resolve, reject) => {
+          const existingScript = document.querySelector<HTMLScriptElement>(
+            `script[data-mathcha-helper='pyodide'][src='${PYODIDE_SCRIPT_URL}']`
+          );
+
+          if (existingScript) {
+            existingScript.addEventListener("load", () => resolve(), { once: true });
+            existingScript.addEventListener("error", () => reject(new Error("Failed to load Pyodide script")), {
+              once: true
+            });
+            return;
+          }
+
+          const script = document.createElement("script");
+          script.src = PYODIDE_SCRIPT_URL;
+          script.async = true;
+          script.dataset.mathchaHelper = "pyodide";
+          script.onload = () => resolve();
+          script.onerror = () => reject(new Error("Failed to load Pyodide script"));
+          document.head.appendChild(script);
+        }).then(() => {
+          if (typeof pageWindow.loadPyodide !== "function") {
+            throw new Error("Pyodide loaded but did not expose loadPyodide");
+          }
+        }).catch((error) => {
+          scriptLoadPromise = null;
+          throw error;
+        });
+      }
+
+      return scriptLoadPromise;
+    };
+
+    const getPyodide = async (): Promise<PyodideInterface> => {
+      if (!pyodidePromise) {
+        notify("Loading Python runtime...");
+        pyodidePromise = ensurePyodideScript()
+          .then(() => {
+            const loadPyodide = pageWindow.loadPyodide;
+            if (typeof loadPyodide !== "function") {
+              throw new Error("loadPyodide is unavailable");
+            }
+
+            return loadPyodide({ indexURL: PYODIDE_INDEX_URL });
+          })
+          .catch((error) => {
+          pyodidePromise = null;
+          throw error;
+        });
+      }
+
+      return pyodidePromise;
+    };
+
+    return {
+      async helloWorld(): Promise<string> {
+        const pyodide = await getPyodide();
+        return String(pyodide.runPython("'hello world from python'"));
+      }
+    };
+  })();
+
   const menuIntegration = {
     createMenuItem(text: string, shortcut: string, onClick: (() => void | Promise<void>) | null): HTMLElement {
       const item = document.createElement("ct-item");
@@ -575,6 +662,18 @@ declare global {
       } catch (error) {
         console.error("[Mathcha Helper] Auto-answer error:", error);
       }
+    },
+
+    pythonHello: async () => {
+      try {
+        const message = await pythonRuntime.helloWorld();
+        console.log("[Mathcha Helper] Python hello result:", message);
+        notify(message);
+      } catch (error) {
+        console.error("[Mathcha Helper] Python hello error:", error);
+        const message = error instanceof Error ? error.message : "Failed to run Python";
+        notify(`Python runtime error: ${message}`, true);
+      }
     }
   };
 
@@ -601,6 +700,10 @@ declare global {
         event.preventDefault();
         console.log("[Mathcha Helper] Answer shortcut pressed (Ctrl+Alt+/)");
         void commands.answer();
+      } else if (event.key === config.aiShortcuts.pythonHello) {
+        event.preventDefault();
+        console.log("[Mathcha Helper] Python hello shortcut pressed (Ctrl+Alt+,)");
+        void commands.pythonHello();
       }
     }
   });
