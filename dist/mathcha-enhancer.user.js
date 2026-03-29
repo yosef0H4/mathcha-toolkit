@@ -276,17 +276,24 @@
           throw new Error("No runtime LaTeX selection available for solver");
         }
         const hasEquationTail = this.hasEquationTail(rawLatex);
+        const isWrappedMathSelection = this.isWrappedMathSelection(rawLatex);
         const normalizedLatex = this.normalizeLatexForSolver(rawLatex);
         this.logRuntime("extractSelectedLatexForSolver:success", {
           latexPreview: rawLatex.slice(0, 120),
           normalizedPreview: normalizedLatex.slice(0, 120),
-          hasEquationTail
+          hasEquationTail,
+          isWrappedMathSelection
         });
         return {
           raw: rawLatex,
           normalized: normalizedLatex,
-          hasEquationTail
+          hasEquationTail,
+          isWrappedMathSelection
         };
+      },
+      isWrappedMathSelection(latex) {
+        const trimmed = latex.trim();
+        return /^\$[\s\S]*\$$/.test(trimmed) && trimmed.length >= 2 || /^\$\$[\s\S]*\$\$$/.test(trimmed) && trimmed.length >= 4;
       },
       hasEquationTail(latex) {
         const normalized = this.normalizeImportLatex(latex.trim()).replace(/^\\displaystyle\s*/, "").trim();
@@ -1339,9 +1346,12 @@ def mathcha_solve_latex(input_latex):
                 log("Menu item: Solve with Python clicked");
                 const solverInput = await mathcha.extractSelectedLatexForSolver();
                 const answer = await pythonRuntime.solveLatex(solverInput.normalized);
-                const insertionLatex = `${solverInput.hasEquationTail ? "" : "="}${answer}`;
+                const rawInsertionLatex = `${solverInput.hasEquationTail ? "" : "="}${answer}`;
+                const insertionLatex = solverInput.isWrappedMathSelection ? "$" + rawInsertionLatex + "$" : rawInsertionLatex;
                 log("Formatted answer:", insertionLatex);
-                await mathcha.insertMathAtSelectionEnd(insertionLatex, { forceMathMode: true });
+                await mathcha.insertMathAtSelectionEnd(insertionLatex, {
+                  forceMathMode: !solverInput.isWrappedMathSelection
+                });
                 notify(`Answer inserted: ${insertionLatex}`);
               } catch (error) {
                 logError("Menu handler error:", error);
@@ -1388,9 +1398,12 @@ def mathcha_solve_latex(input_latex):
           const solverInput = await mathcha.extractSelectedLatexForSolver();
           log("LaTeX extracted:", solverInput.normalized);
           const answer = await pythonRuntime.solveLatex(solverInput.normalized);
-          const insertionLatex = `${solverInput.hasEquationTail ? "" : "="}${answer}`;
+          const rawInsertionLatex = `${solverInput.hasEquationTail ? "" : "="}${answer}`;
+          const insertionLatex = solverInput.isWrappedMathSelection ? "$" + rawInsertionLatex + "$" : rawInsertionLatex;
           log("Formatted answer:", insertionLatex);
-          await mathcha.insertMathAtSelectionEnd(insertionLatex, { forceMathMode: true });
+          await mathcha.insertMathAtSelectionEnd(insertionLatex, {
+            forceMathMode: !solverInput.isWrappedMathSelection
+          });
           notify(`Answer inserted: ${insertionLatex}`);
         } catch (error) {
           logError("Auto-answer error:", error);
