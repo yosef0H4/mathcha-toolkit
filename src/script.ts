@@ -1,7 +1,7 @@
 import type { PyodideInterface } from "pyodide";
 
 type AiServiceKey = "claude" | "chatgpt" | "gemini";
-type CommandKey = "copyLatex" | "analyze" | "symbolab" | "answer" | "pythonHello";
+type CommandKey = "copyLatex" | "analyze" | "symbolab" | "answer";
 
 export {};
 
@@ -48,7 +48,11 @@ declare global {
   const EXTENDED_PARSER_VERSION = "1.11.0";
   const ANTLR4_RUNTIME_VERSION = "4.13.2";
   const PERSIST_ROOT = "/mathcha-helper-cache";
-  const PERSIST_SITE_PACKAGES = `${PERSIST_ROOT}/site-packages`;
+  const PERSIST_ACTIVE_ROOT = `${PERSIST_ROOT}/active`;
+  const PERSIST_ACTIVE_SITE_PACKAGES = `${PERSIST_ACTIVE_ROOT}/site-packages`;
+  const PERSIST_STAGING_ROOT = `${PERSIST_ROOT}/staging`;
+  const PERSIST_STAGING_SITE_PACKAGES = `${PERSIST_STAGING_ROOT}/site-packages`;
+  const PERSIST_BACKUP_ROOT = `${PERSIST_ROOT}/backup`;
   const PERSIST_STATE_FILE = `${PERSIST_ROOT}/cache-state.json`;
 
   type PyodideWindow = Window & typeof globalThis & { loadPyodide?: LoadPyodide };
@@ -85,8 +89,7 @@ declare global {
       copyLatex: "'",
       analyze: ";",
       symbolab: ".",
-      answer: "/",
-      pythonHello: ","
+      answer: "/"
     },
     delay: {
       standard: 200,
@@ -164,9 +167,6 @@ declare global {
       </div>
       <div style="margin: 4px 0;">
         <kbd>${config.aiShortcuts.answer}</kbd> - Solve with Python
-      </div>
-      <div style="margin: 4px 0;">
-        <kbd>${config.aiShortcuts.pythonHello}</kbd> - Python Hello Test
       </div>
     `;
 
@@ -426,8 +426,16 @@ declare global {
             fs.mkdir(PERSIST_ROOT);
           }
 
-          if (!fs.analyzePath(PERSIST_SITE_PACKAGES).exists) {
-            fs.mkdir(PERSIST_SITE_PACKAGES);
+          for (const dir of [PERSIST_ACTIVE_ROOT, PERSIST_STAGING_ROOT, PERSIST_BACKUP_ROOT]) {
+            if (!fs.analyzePath(dir).exists) {
+              fs.mkdir(dir);
+            }
+          }
+
+          for (const dir of [PERSIST_ACTIVE_SITE_PACKAGES, PERSIST_STAGING_SITE_PACKAGES]) {
+            if (!fs.analyzePath(dir).exists) {
+              fs.mkdir(dir);
+            }
           }
 
           try {
@@ -489,33 +497,101 @@ declare global {
 import importlib
 import sys
 
-cache_path = "${PERSIST_SITE_PACKAGES}"
+cache_path = "${PERSIST_ACTIVE_SITE_PACKAGES}"
 if cache_path not in sys.path:
     sys.path.insert(0, cache_path)
 importlib.invalidate_caches()
 `);
     };
 
-    const hasPersistedSolver = async (pyodide: PyodideInterface): Promise<boolean> => {
-      const result = await pyodide.runPythonAsync(`
-import importlib.util
-import importlib.metadata
+    const suspendActiveCacheImports = async (pyodide: PyodideInterface): Promise<void> => {
+      await pyodide.runPythonAsync(`
+import importlib
+import sys
 
-bool(
-    importlib.util.find_spec("latex2sympy2_extended")
-    and importlib.util.find_spec("antlr4")
-    and importlib.metadata.version("antlr4-python3-runtime")
-    and importlib.metadata.version("latex2sympy2-extended")
-)
+active_cache_path = "${PERSIST_ACTIVE_SITE_PACKAGES}"
+
+while active_cache_path in sys.path:
+    sys.path.remove(active_cache_path)
+
+for module_name in (
+    "latex2sympy2_extended",
+    "latex2sympy2_extended.antlr_parser",
+    "latex2sympy2_extended.latex2sympy2",
+    "antlr4",
+):
+    sys.modules.pop(module_name, None)
+
+importlib.invalidate_caches()
 `);
-      return Boolean(result);
     };
 
-    const validatePersistedSolver = async (pyodide: PyodideInterface): Promise<boolean> => {
+    const restoreActiveCacheImports = async (pyodide: PyodideInterface): Promise<void> => {
+      await pyodide.runPythonAsync(`
+import importlib
+import sys
+
+active_cache_path = "${PERSIST_ACTIVE_SITE_PACKAGES}"
+
+if active_cache_path not in sys.path:
+    sys.path.insert(0, active_cache_path)
+
+importlib.invalidate_caches()
+`);
+    };
+
+    const validateRuntimeSolverSmokeTest = async (
+      pyodide: PyodideInterface
+    ): Promise<{ ok: boolean; error?: string }> => {
+      const result = await pyodide.runPythonAsync(`
+import json
+
+try:
+    solver_result = mathcha_solve_latex(r"2^{5} + 2^{4} + 2^{2} + 2^{0}")
+    assert solver_result == "53"
+    validation_result = json.dumps({"ok": True})
+except Exception as error:
+    validation_result = json.dumps({"ok": False, "error": repr(error)})
+
+validation_result
+`);
+      return JSON.parse(String(result)) as { ok: boolean; error?: string };
+    };
+
+    const hasPersistedSolverFiles = (pyodide: PyodideInterface): boolean => {
+      const fs = pyodide.FS as {
+        analyzePath: (path: string) => { exists: boolean };
+      };
+
+      const requiredPaths = [
+        `${PERSIST_ACTIVE_SITE_PACKAGES}/latex2sympy2_extended`,
+        `${PERSIST_ACTIVE_SITE_PACKAGES}/antlr4`,
+        `${PERSIST_ACTIVE_SITE_PACKAGES}/antlr4_python3_runtime-${ANTLR4_RUNTIME_VERSION}.dist-info`,
+        `${PERSIST_ACTIVE_SITE_PACKAGES}/latex2sympy2_extended-${EXTENDED_PARSER_VERSION}.dist-info`
+      ];
+
+      return requiredPaths.every((path) => fs.analyzePath(path).exists);
+    };
+
+    const validatePersistedSolver = async (
+      pyodide: PyodideInterface
+    ): Promise<{ ok: boolean; error?: string }> => {
       const result = await pyodide.runPythonAsync(`
 import importlib
 import importlib.metadata
 import importlib.util
+import json
+import sys
+
+for module_name in (
+    "latex2sympy2_extended",
+    "latex2sympy2_extended.antlr_parser",
+    "latex2sympy2_extended.latex2sympy2",
+    "antlr4",
+):
+    sys.modules.pop(module_name, None)
+
+importlib.invalidate_caches()
 
 try:
     assert importlib.util.find_spec("latex2sympy2_extended")
@@ -523,81 +599,166 @@ try:
     assert importlib.metadata.version("antlr4-python3-runtime") == "${ANTLR4_RUNTIME_VERSION}"
     assert importlib.metadata.version("latex2sympy2-extended") == "${EXTENDED_PARSER_VERSION}"
     from latex2sympy2_extended import latex2sympy
+    from sympy import simplify, latex
     import antlr4
-    True
-except Exception:
-    False
+    expr = latex2sympy(r"2^{5} + 2^{4} + 2^{2} + 2^{0}")
+    result = latex(simplify(expr.doit().doit()))
+    assert result == "53"
+    validation_result = json.dumps({"ok": True})
+except Exception as error:
+    validation_result = json.dumps({"ok": False, "error": repr(error)})
+
+validation_result
 `);
-      return Boolean(result);
+      return JSON.parse(String(result)) as { ok: boolean; error?: string };
     };
 
-    const clearPersistedSolver = async (pyodide: PyodideInterface): Promise<void> => {
+    const clearStagingSolver = async (pyodide: PyodideInterface): Promise<void> => {
       await pyodide.runPythonAsync(`
 import pathlib
 import shutil
 
-target_root = pathlib.Path("${PERSIST_SITE_PACKAGES}")
-target_root.mkdir(parents=True, exist_ok=True)
-
-for name in (
-    "latex2sympy2_extended",
-    "antlr4",
-    "antlr4_python3_runtime-${ANTLR4_RUNTIME_VERSION}.dist-info",
-    "latex2sympy2_extended-${EXTENDED_PARSER_VERSION}.dist-info",
-):
-    path = target_root / name
-    if path.exists():
-        if path.is_dir():
-            shutil.rmtree(path)
+for root_path_str in ("${PERSIST_STAGING_SITE_PACKAGES}", "${PERSIST_BACKUP_ROOT}"):
+    root_path = pathlib.Path(root_path_str)
+    root_path.mkdir(parents=True, exist_ok=True)
+    for child in list(root_path.iterdir()):
+        if child.is_dir():
+            shutil.rmtree(child)
         else:
-            path.unlink()
+            child.unlink()
 `);
-      await writeCacheState(pyodide, { status: "empty" });
     };
 
-    const persistInstalledSolver = async (pyodide: PyodideInterface): Promise<void> => {
+    const stageInstalledSolver = async (pyodide: PyodideInterface): Promise<void> => {
       await pyodide.runPythonAsync(`
-import importlib
-import importlib.util
 import site
 import pathlib
 import shutil
 
-target_root = pathlib.Path("${PERSIST_SITE_PACKAGES}")
-target_root.mkdir(parents=True, exist_ok=True)
-
 site_packages_root = pathlib.Path(site.getsitepackages()[0])
+active_root = pathlib.Path("${PERSIST_ACTIVE_ROOT}")
+staging_root = pathlib.Path("${PERSIST_STAGING_ROOT}")
+backup_root = pathlib.Path("${PERSIST_BACKUP_ROOT}")
+active_site_packages = pathlib.Path("${PERSIST_ACTIVE_SITE_PACKAGES}")
+staging_site_packages = pathlib.Path("${PERSIST_STAGING_SITE_PACKAGES}")
 
-for module_name in ("latex2sympy2_extended", "antlr4"):
-    spec = importlib.util.find_spec(module_name)
-    if spec is None:
-        raise ImportError(f"Cannot find installed module: {module_name}")
+for root in (active_root, staging_root, backup_root, active_site_packages, staging_site_packages):
+    root.mkdir(parents=True, exist_ok=True)
 
-    if spec.submodule_search_locations:
-        source_path = pathlib.Path(next(iter(spec.submodule_search_locations)))
-        destination_path = target_root / source_path.name
-        if destination_path.exists():
-            shutil.rmtree(destination_path)
-        shutil.copytree(source_path, destination_path)
+for child in list(staging_site_packages.iterdir()):
+    if child.is_dir():
+        shutil.rmtree(child)
     else:
-        source_path = pathlib.Path(spec.origin)
-        destination_path = target_root / source_path.name
-        shutil.copy2(source_path, destination_path)
+        child.unlink()
+
+for package_dir_name in ("latex2sympy2_extended", "antlr4"):
+    source_path = site_packages_root / package_dir_name
+    if not source_path.exists():
+        raise ImportError(f"Cannot find installed package directory: {package_dir_name}")
+
+    destination_path = staging_site_packages / package_dir_name
+    if destination_path.exists():
+        shutil.rmtree(destination_path)
+    shutil.copytree(source_path, destination_path)
 
 for metadata_dir in (
     site_packages_root / "antlr4_python3_runtime-${ANTLR4_RUNTIME_VERSION}.dist-info",
     site_packages_root / "latex2sympy2_extended-${EXTENDED_PARSER_VERSION}.dist-info",
 ):
     if metadata_dir.exists():
-        destination_path = target_root / metadata_dir.name
+        destination_path = staging_site_packages / metadata_dir.name
         if destination_path.exists():
             shutil.rmtree(destination_path)
         shutil.copytree(metadata_dir, destination_path)
+`);
+    };
 
-importlib.invalidate_caches()
+    const promoteStagedSolver = async (pyodide: PyodideInterface): Promise<void> => {
+      await pyodide.runPythonAsync(`
+import pathlib
+import shutil
+
+backup_root = pathlib.Path("${PERSIST_BACKUP_ROOT}")
+active_site_packages = pathlib.Path("${PERSIST_ACTIVE_SITE_PACKAGES}")
+staging_site_packages = pathlib.Path("${PERSIST_STAGING_SITE_PACKAGES}")
+
+for root in (backup_root, active_site_packages, staging_site_packages):
+    root.mkdir(parents=True, exist_ok=True)
+
+for child in list(backup_root.iterdir()):
+    if child.is_dir():
+        shutil.rmtree(child)
+    else:
+        child.unlink()
+
+for child in list(active_site_packages.iterdir()):
+    shutil.move(str(child), backup_root / child.name)
+
+for child in list(staging_site_packages.iterdir()):
+    shutil.move(str(child), active_site_packages / child.name)
+
+for child in list(backup_root.iterdir()):
+    if child.is_dir():
+        shutil.rmtree(child)
+    else:
+        child.unlink()
 `);
       await writeCacheState(pyodide, { status: "ready", version: SCRIPT_VERSION });
       log("Saving persistent Python cache to IndexedDB");
+    };
+
+    const validateStagedSolver = async (
+      pyodide: PyodideInterface
+    ): Promise<{ ok: boolean; error?: string }> => {
+      const result = await pyodide.runPythonAsync(`
+import importlib
+import importlib.metadata
+import importlib.util
+import json
+import sys
+
+active_cache_path = "${PERSIST_ACTIVE_SITE_PACKAGES}"
+staging_cache_path = "${PERSIST_STAGING_SITE_PACKAGES}"
+
+while active_cache_path in sys.path:
+    sys.path.remove(active_cache_path)
+if staging_cache_path not in sys.path:
+    sys.path.insert(0, staging_cache_path)
+
+for module_name in (
+    "latex2sympy2_extended",
+    "latex2sympy2_extended.antlr_parser",
+    "latex2sympy2_extended.latex2sympy2",
+    "antlr4",
+):
+    sys.modules.pop(module_name, None)
+
+importlib.invalidate_caches()
+
+try:
+    assert importlib.util.find_spec("latex2sympy2_extended")
+    assert importlib.util.find_spec("antlr4")
+    assert importlib.metadata.version("antlr4-python3-runtime") == "${ANTLR4_RUNTIME_VERSION}"
+    assert importlib.metadata.version("latex2sympy2-extended") == "${EXTENDED_PARSER_VERSION}"
+    from latex2sympy2_extended import latex2sympy
+    from sympy import simplify, latex
+    import antlr4
+    expr = latex2sympy(r"2^{5} + 2^{4} + 2^{2} + 2^{0}")
+    result = latex(simplify(expr.doit().doit()))
+    assert result == "53"
+    validation_result = json.dumps({"ok": True})
+except Exception as error:
+    validation_result = json.dumps({"ok": False, "error": repr(error)})
+finally:
+    while staging_cache_path in sys.path:
+        sys.path.remove(staging_cache_path)
+    if active_cache_path not in sys.path:
+        sys.path.insert(0, active_cache_path)
+    importlib.invalidate_caches()
+
+validation_result
+`);
+      return JSON.parse(String(result)) as { ok: boolean; error?: string };
     };
 
     const ensurePyodideScript = async (): Promise<void> => {
@@ -671,23 +832,22 @@ importlib.invalidate_caches()
       if (!solverPromise) {
         solverPromise = (async () => {
           const cacheState = await readCacheState(pyodide);
-          let cachedSolver = cacheState.status === "ready" && (await hasPersistedSolver(pyodide));
+          let cachedSolver = cacheState.status === "ready" && hasPersistedSolverFiles(pyodide);
 
           if (cacheState.status === "installing" || cacheState.status === "broken") {
-            log(`Cached solver state is ${cacheState.status}, clearing broken cache`);
-            await clearPersistedSolver(pyodide);
-            cachedSolver = false;
+            log(`Cached solver state is ${cacheState.status}, clearing staging cache`);
+            await clearStagingSolver(pyodide);
           }
 
           if (cachedSolver) {
             const validCache = await validatePersistedSolver(pyodide);
 
-            if (validCache) {
+            if (validCache.ok) {
               log("Using cached solver packages from IndexedDB");
             } else {
-              log("Cached solver validation failed, reinstalling");
+              log("Cached solver validation failed:", validCache.error ?? "unknown reason");
+              log("Cached solver validation failed, keeping active cache until staged reinstall succeeds");
               await writeCacheState(pyodide, { status: "broken" });
-              await clearPersistedSolver(pyodide);
               cachedSolver = false;
             }
           }
@@ -696,23 +856,39 @@ importlib.invalidate_caches()
             await writeCacheState(pyodide, { status: "installing", version: SCRIPT_VERSION });
             notify("Loading Python solver packages...");
             await pyodide.loadPackage("micropip");
+            await suspendActiveCacheImports(pyodide);
 
             const micropip = pyodide.pyimport("micropip") as {
-              install: (packages: string[]) => Promise<void>;
+              install: (packages: string[], options?: { reinstall?: boolean }) => Promise<void>;
               destroy?: () => void;
             };
 
             try {
               log(`Installing antlr4-python3-runtime==${ANTLR4_RUNTIME_VERSION}`);
-              await micropip.install([`antlr4-python3-runtime==${ANTLR4_RUNTIME_VERSION}`]);
+              await micropip.install([`antlr4-python3-runtime==${ANTLR4_RUNTIME_VERSION}`], { reinstall: true });
 
               log(`Installing latex2sympy2-extended[antlr4-13-2]==${EXTENDED_PARSER_VERSION}`);
-              await micropip.install([`latex2sympy2-extended[antlr4-13-2]==${EXTENDED_PARSER_VERSION}`]);
+              await micropip.install([`latex2sympy2-extended[antlr4-13-2]==${EXTENDED_PARSER_VERSION}`], {
+                reinstall: true
+              });
             } finally {
               micropip.destroy?.();
             }
 
-            await persistInstalledSolver(pyodide);
+            try {
+              await stageInstalledSolver(pyodide);
+
+              const validStagedCache = await validateStagedSolver(pyodide);
+              if (!validStagedCache.ok) {
+                throw new Error(
+                  `Staged solver cache validation failed: ${validStagedCache.error ?? "unknown reason"}`
+                );
+              }
+
+              await promoteStagedSolver(pyodide);
+            } finally {
+              await restoreActiveCacheImports(pyodide);
+            }
           } else {
             await writeCacheState(pyodide, { status: "ready", version: SCRIPT_VERSION });
           }
@@ -727,6 +903,11 @@ def mathcha_solve_latex(input_latex):
     result = simplify(expr.doit().doit())
     return latex(result)
 `);
+
+          const runtimeSmokeTest = await validateRuntimeSolverSmokeTest(pyodide);
+          if (!runtimeSmokeTest.ok) {
+            throw new Error(`Runtime solver smoke test failed: ${runtimeSmokeTest.error ?? "unknown reason"}`);
+          }
         })().catch((error) => {
           solverPromise = null;
           void writeCacheState(pyodide, { status: "broken", version: SCRIPT_VERSION });
@@ -758,6 +939,13 @@ def mathcha_solve_latex(input_latex):
         } finally {
           globals.delete("mathcha_input_latex");
         }
+      },
+
+      async warmup(): Promise<void> {
+        const pyodide = await getPyodide();
+        const hello = String(pyodide.runPython("'hello world from python'"));
+        log("Python startup test passed:", hello);
+        await ensureSolver();
       }
     };
   })();
@@ -918,18 +1106,6 @@ def mathcha_solve_latex(input_latex):
         const message = error instanceof Error ? error.message : "Failed to solve LaTeX locally";
         notify(`Local Python solve error: ${message}`, true);
       }
-    },
-
-    pythonHello: async () => {
-      try {
-        const message = await pythonRuntime.helloWorld();
-        log("Python hello result:", message);
-        notify(message);
-      } catch (error) {
-        logError("Python hello error:", error);
-        const message = error instanceof Error ? error.message : "Failed to run Python";
-        notify(`Python runtime error: ${message}`, true);
-      }
     }
   };
 
@@ -956,10 +1132,6 @@ def mathcha_solve_latex(input_latex):
         event.preventDefault();
         log("Answer shortcut pressed (Ctrl+Alt+/)");
         void commands.answer();
-      } else if (event.key === config.aiShortcuts.pythonHello) {
-        event.preventDefault();
-        log("Python hello shortcut pressed (Ctrl+Alt+,)");
-        void commands.pythonHello();
       }
     }
   });
@@ -979,6 +1151,11 @@ def mathcha_solve_latex(input_latex):
   if (window.location.hostname.includes("mathcha.io")) {
     menuIntegration.injectCustomMenu();
     log("Initializing userscript");
+    void pythonRuntime.warmup().then(() => {
+      log("Background Python warmup finished");
+    }).catch((error) => {
+      logError("Background Python warmup failed:", error);
+    });
     void loadMathJax()
       .then(() => {
         notify("Mathcha Helper ready - Use Ctrl+Alt for AI features");
