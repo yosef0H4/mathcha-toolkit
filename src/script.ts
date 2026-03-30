@@ -635,6 +635,10 @@ declare global {
     },
 
     extractBaseOutputDirective(latex: string): { expression: string; targetBase: number | null } {
+      if (/\\(?:to|rightarrow)\s*$/u.test(latex)) {
+        throw new Error("Base output syntax is incomplete");
+      }
+
       const directiveMatch = latex.match(
         /^(.*?)(?:\\(?:to|rightarrow)\s*_\{\s*(\d+)\s*\}|\\(?:to|rightarrow)\s*_(\d+))\s*$/u
       );
@@ -1423,6 +1427,46 @@ declare global {
     return solverInput.isWrappedMathSelection ? "$" + rawInsertionLatex + "$" : rawInsertionLatex;
   };
 
+  const describeSolverError = (error: unknown): string => {
+    const rawMessage = error instanceof Error ? error.message : String(error);
+
+    if (/Target base must be between 2 and 36/u.test(rawMessage)) {
+      return "Use a target base between 2 and 36, like \\rightarrow _{2}.";
+    }
+
+    if (/Base output syntax is incomplete/u.test(rawMessage)) {
+      return "Finish the base output syntax, for example \\rightarrow _{2}.";
+    }
+
+    const invalidDigitMatch = rawMessage.match(/Invalid digit '(.+)' for base (\d+)/u);
+    if (invalidDigitMatch) {
+      return `Digit ${invalidDigitMatch[1]} is not valid in base ${invalidDigitMatch[2]}.`;
+    }
+
+    const unsupportedBaseMatch = rawMessage.match(/Unsupported input base: (\d+)/u);
+    if (unsupportedBaseMatch) {
+      return `Input base ${unsupportedBaseMatch[1]} is not supported. Use a base from 2 to 36.`;
+    }
+
+    if (/Base conversion currently supports integer results only/u.test(rawMessage)) {
+      return "Base conversion currently works only for whole-number results.";
+    }
+
+    if (/No runtime LaTeX selection available for solver/u.test(rawMessage)) {
+      return "Select a math expression first.";
+    }
+
+    if (/Selected LaTeX is empty after solver normalization/u.test(rawMessage)) {
+      return "The selected expression is empty after cleanup.";
+    }
+
+    if (/I don't understand this|I expected|syntaxError|InputMismatchException/u.test(rawMessage)) {
+      return "Mathcha Helper could not parse that expression. Check the base syntax and try again.";
+    }
+
+    return "Failed to solve the selected expression.";
+  };
+
   const pythonRuntime = (() => {
     let pyodidePromise: Promise<PyodideInterface> | null = null;
     let scriptLoadPromise: Promise<void> | null = null;
@@ -2170,8 +2214,7 @@ def mathcha_solve_latex(input_latex):
               await solveAndInsertAnswer();
             } catch (error) {
               logError("Menu handler error:", error);
-              const message = error instanceof Error ? error.message : "Failed to solve LaTeX locally";
-              notify(`Local Python solve error: ${message}`, true);
+              notify(describeSolverError(error), true);
             }
           }
         }
@@ -2218,8 +2261,7 @@ def mathcha_solve_latex(input_latex):
         await solveAndInsertAnswer();
       } catch (error) {
         logError("Auto-answer error:", error);
-        const message = error instanceof Error ? error.message : "Failed to solve LaTeX locally";
-        notify(`Local Python solve error: ${message}`, true);
+        notify(describeSolverError(error), true);
       }
     },
 
