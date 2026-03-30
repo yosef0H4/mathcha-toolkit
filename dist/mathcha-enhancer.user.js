@@ -79,7 +79,31 @@
           name: "Google Gemini",
           url: "https://gemini.google.com/?q=%s"
         }
+      },
+      solver: {
+        defaultAnswerFormat: "fraction",
+        decimalPlaces: 6
       }
+    };
+    const ANSWER_FORMAT_STORAGE_KEY = "answerFormat";
+    const answerFormatLabels = {
+      fraction: "Exact Fraction",
+      decimal: "Decimal",
+      mixed: "Mixed Number"
+    };
+    const getAnswerFormat = () => {
+      const stored = GM_getValue(ANSWER_FORMAT_STORAGE_KEY, config.solver.defaultAnswerFormat);
+      return stored === "fraction" || stored === "decimal" || stored === "mixed" ? stored : config.solver.defaultAnswerFormat;
+    };
+    const setAnswerFormat = (format) => {
+      GM_setValue(ANSWER_FORMAT_STORAGE_KEY, format);
+    };
+    const cycleAnswerFormat = () => {
+      const formats = ["fraction", "decimal", "mixed"];
+      const current = getAnswerFormat();
+      const next = formats[(formats.indexOf(current) + 1) % formats.length];
+      setAnswerFormat(next);
+      return next;
     };
     const notify = /* @__PURE__ */ (() => {
       let current = null;
@@ -135,9 +159,19 @@
       <div style="margin: 4px 0;">
         <kbd>${config.aiShortcuts.pasteFromLatex}</kbd> - Paste From LaTeX
       </div>
+      <div style="margin: 8px 0 0; padding-top: 8px; border-top: 1px solid #eee;">
+        Answer format:
+        <strong data-answer-format-label>${answerFormatLabels[getAnswerFormat()]}</strong>
+      </div>
     `;
       document.body.appendChild(aiTooltip2);
       return aiTooltip2;
+    };
+    const updateAnswerFormatUi = (tooltip) => {
+      const formatLabel = tooltip?.querySelector("[data-answer-format-label]");
+      if (formatLabel) {
+        formatLabel.textContent = answerFormatLabels[getAnswerFormat()];
+      }
     };
     const mathcha = {
       getLatexIoHandler(editor) {
@@ -782,6 +816,76 @@ ${latex}`));
         });
       }
     };
+    const formatRationalAsLatex = (numerator, denominator) => {
+      if (denominator === "1") return numerator;
+      return `\\frac{${numerator}}{${denominator}}`;
+    };
+    const trimTrailingZeros = (value) => value.replace(/(\.\d*?[1-9])0+$/u, "$1").replace(/\.0+$/u, "");
+    const formatDecimalFromRational = (numerator, denominator, places) => {
+      const num = BigInt(numerator);
+      const den = BigInt(denominator);
+      if (den === 0n) {
+        throw new Error("Cannot format decimal from zero denominator");
+      }
+      const negative = num < 0n !== den < 0n;
+      const absNum = num < 0n ? -num : num;
+      const absDen = den < 0n ? -den : den;
+      const scale = 10n ** BigInt(places);
+      const roundedScaled = (absNum * scale * 2n + absDen) / (2n * absDen);
+      const integerPart = roundedScaled / scale;
+      const fractionalPart = roundedScaled % scale;
+      const decimal = places > 0 ? `${integerPart}.${fractionalPart.toString().padStart(places, "0")}` : integerPart.toString();
+      const trimmed = trimTrailingZeros(decimal);
+      return negative && trimmed !== "0" ? `-${trimmed}` : trimmed;
+    };
+    const formatMixedFromRational = (numerator, denominator) => {
+      const num = BigInt(numerator);
+      const den = BigInt(denominator);
+      if (den === 0n) {
+        throw new Error("Cannot format mixed number from zero denominator");
+      }
+      const normalizedDen = den < 0n ? -den : den;
+      const normalizedNum = den < 0n ? -num : num;
+      const whole = normalizedNum / normalizedDen;
+      const remainder = normalizedNum % normalizedDen;
+      if (remainder === 0n) {
+        return whole.toString();
+      }
+      const absWhole = whole < 0n ? -whole : whole;
+      const absRemainder = remainder < 0n ? -remainder : remainder;
+      if (whole === 0n) {
+        return formatRationalAsLatex(normalizedNum.toString(), normalizedDen.toString());
+      }
+      if (whole < 0n) {
+        return `-${absWhole.toString()}-${formatRationalAsLatex(absRemainder.toString(), normalizedDen.toString())}`;
+      }
+      return `${whole.toString()}+${formatRationalAsLatex(absRemainder.toString(), normalizedDen.toString())}`;
+    };
+    const formatSolverResult = (result, format) => {
+      if (format === "fraction") {
+        return { latex: result.latex, fallbackReason: null };
+      }
+      if (result.isRational && result.numerator && result.denominator) {
+        if (format === "decimal") {
+          return {
+            latex: formatDecimalFromRational(result.numerator, result.denominator, config.solver.decimalPlaces),
+            fallbackReason: null
+          };
+        }
+        return {
+          latex: formatMixedFromRational(result.numerator, result.denominator),
+          fallbackReason: null
+        };
+      }
+      return {
+        latex: result.latex,
+        fallbackReason: `${format}-requires-rational`
+      };
+    };
+    const buildInsertedAnswerLatex = (solverInput, formattedAnswer) => {
+      const rawInsertionLatex = `${solverInput.hasEquationTail ? "" : "="}${formattedAnswer}`;
+      return solverInput.isWrappedMathSelection ? "$" + rawInsertionLatex + "$" : rawInsertionLatex;
+    };
     const pythonRuntime = /* @__PURE__ */ (() => {
       let pyodidePromise = null;
       let scriptLoadPromise = null;
@@ -900,7 +1004,11 @@ import json
 
 try:
     solver_result = mathcha_solve_latex(r"2^{5} + 2^{4} + 2^{2} + 2^{0}")
-    assert solver_result == "53"
+    parsed = json.loads(solver_result)
+    assert parsed["latex"] == "53"
+    assert parsed["is_rational"] is True
+    assert parsed["numerator"] == "53"
+    assert parsed["denominator"] == "1"
     validation_result = json.dumps({"ok": True})
 except Exception as error:
     validation_result = json.dumps({"ok": False, "error": repr(error)})
@@ -1206,13 +1314,26 @@ validation_result
             }
             notify("Preparing local LaTeX solver...");
             await pyodide.runPythonAsync(`
+import json
+
 from latex2sympy2_extended import latex2sympy
 from sympy import simplify, latex
 
 def mathcha_solve_latex(input_latex):
     expr = latex2sympy(input_latex)
     result = simplify(expr.doit().doit())
-    return latex(result)
+    payload = {
+        "latex": latex(result),
+        "is_rational": bool(getattr(result, "is_rational", False)),
+        "numerator": None,
+        "denominator": None,
+        "decimal": None,
+    }
+    if payload["is_rational"]:
+        numerator, denominator = result.as_numer_denom()
+        payload["numerator"] = str(int(numerator))
+        payload["denominator"] = str(int(denominator))
+    return json.dumps(payload)
 `);
             const runtimeSmokeTest = await validateRuntimeSolverSmokeTest(pyodide);
             if (!runtimeSmokeTest.ok) {
@@ -1238,7 +1359,14 @@ def mathcha_solve_latex(input_latex):
           globals.set("mathcha_input_latex", latexInput);
           try {
             const result = await pyodide.runPythonAsync("mathcha_solve_latex(mathcha_input_latex)");
-            return String(result);
+            const parsed = JSON.parse(String(result));
+            return {
+              latex: typeof parsed.latex === "string" ? parsed.latex : "",
+              isRational: Boolean(parsed.is_rational),
+              numerator: typeof parsed.numerator === "string" ? parsed.numerator : null,
+              denominator: typeof parsed.denominator === "string" ? parsed.denominator : null,
+              decimal: typeof parsed.decimal === "string" ? parsed.decimal : null
+            };
           } finally {
             globals.delete("mathcha_input_latex");
           }
@@ -1251,6 +1379,32 @@ def mathcha_solve_latex(input_latex):
         }
       };
     })();
+    const solveAndInsertAnswer = async () => {
+      const solverInput = await mathcha.extractSelectedLatexForSolver();
+      log("LaTeX extracted:", solverInput.normalized);
+      const answerFormat = getAnswerFormat();
+      const solverResult = await pythonRuntime.solveLatex(solverInput.normalized);
+      const formatted = formatSolverResult(solverResult, answerFormat);
+      const insertionLatex = buildInsertedAnswerLatex(solverInput, formatted.latex);
+      log("Selected answer format:", answerFormatLabels[answerFormat]);
+      mathcha.logRuntime("solveAndInsertAnswer:formatted", {
+        answerFormat,
+        fallbackReason: formatted.fallbackReason,
+        exactLatexPreview: solverResult.latex.slice(0, 120),
+        formattedPreview: formatted.latex.slice(0, 120),
+        insertionPreview: insertionLatex.slice(0, 120)
+      });
+      log("Formatted answer:", insertionLatex);
+      await mathcha.insertMathAtSelectionEnd(insertionLatex, {
+        forceMathMode: !solverInput.isWrappedMathSelection
+      });
+      if (formatted.fallbackReason) {
+        notify(`Answer inserted using exact format fallback (${answerFormatLabels[answerFormat]})`);
+      } else {
+        notify(`Answer inserted: ${insertionLatex}`);
+      }
+      return insertionLatex;
+    };
     const menuIntegration = {
       createMenuItem(text, shortcut, onClick) {
         const item = document.createElement("ct-item");
@@ -1301,6 +1455,15 @@ def mathcha_solve_latex(input_latex):
         const lastAiService = GM_getValue("lastAiService", "claude") ?? "claude";
         const items = [
           {
+            text: `Answer Format: ${answerFormatLabels[getAnswerFormat()]}`,
+            shortcut: "",
+            handler: async () => {
+              const nextFormat = cycleAnswerFormat();
+              updateAnswerFormatUi(aiTooltip);
+              notify(`Answer format: ${answerFormatLabels[nextFormat]}`);
+            }
+          },
+          {
             text: "Paste From LaTeX",
             shortcut: config.aiShortcuts.pasteFromLatex,
             handler: async () => {
@@ -1344,15 +1507,7 @@ def mathcha_solve_latex(input_latex):
             handler: async () => {
               try {
                 log("Menu item: Solve with Python clicked");
-                const solverInput = await mathcha.extractSelectedLatexForSolver();
-                const answer = await pythonRuntime.solveLatex(solverInput.normalized);
-                const rawInsertionLatex = `${solverInput.hasEquationTail ? "" : "="}${answer}`;
-                const insertionLatex = solverInput.isWrappedMathSelection ? "$" + rawInsertionLatex + "$" : rawInsertionLatex;
-                log("Formatted answer:", insertionLatex);
-                await mathcha.insertMathAtSelectionEnd(insertionLatex, {
-                  forceMathMode: !solverInput.isWrappedMathSelection
-                });
-                notify(`Answer inserted: ${insertionLatex}`);
+                await solveAndInsertAnswer();
               } catch (error) {
                 logError("Menu handler error:", error);
                 const message = error instanceof Error ? error.message : "Failed to solve LaTeX locally";
@@ -1395,16 +1550,7 @@ def mathcha_solve_latex(input_latex):
       answer: async () => {
         try {
           log("Auto-answer command triggered");
-          const solverInput = await mathcha.extractSelectedLatexForSolver();
-          log("LaTeX extracted:", solverInput.normalized);
-          const answer = await pythonRuntime.solveLatex(solverInput.normalized);
-          const rawInsertionLatex = `${solverInput.hasEquationTail ? "" : "="}${answer}`;
-          const insertionLatex = solverInput.isWrappedMathSelection ? "$" + rawInsertionLatex + "$" : rawInsertionLatex;
-          log("Formatted answer:", insertionLatex);
-          await mathcha.insertMathAtSelectionEnd(insertionLatex, {
-            forceMathMode: !solverInput.isWrappedMathSelection
-          });
-          notify(`Answer inserted: ${insertionLatex}`);
+          await solveAndInsertAnswer();
         } catch (error) {
           logError("Auto-answer error:", error);
           const message = error instanceof Error ? error.message : "Failed to solve LaTeX locally";

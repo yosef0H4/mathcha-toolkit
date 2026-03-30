@@ -35,13 +35,26 @@ async function bootstrapSolver(pyodide) {
 
   log("bootstrapping extended latex solver");
   await pyodide.runPythonAsync(`
+import json
+
 from latex2sympy2_extended import latex2sympy
 from sympy import simplify, latex
 
 def mathcha_solve_latex(input_latex):
     expr = latex2sympy(input_latex)
     result = simplify(expr.doit().doit())
-    return latex(result)
+    payload = {
+        "latex": latex(result),
+        "is_rational": bool(getattr(result, "is_rational", False)),
+        "numerator": None,
+        "denominator": None,
+        "decimal": None,
+    }
+    if payload["is_rational"]:
+        numerator, denominator = result.as_numer_denom()
+        payload["numerator"] = str(int(numerator))
+        payload["denominator"] = str(int(denominator))
+    return json.dumps(payload)
 `);
 }
 

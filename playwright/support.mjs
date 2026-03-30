@@ -736,6 +736,132 @@ export async function importLatexThroughDirectRuntime(page, latex, options = {})
   );
 }
 
+export async function appendMathAtSelectionEnd(page, insertionLatex, options = {}) {
+  const {
+    waitAfterSelectionMs = 50,
+    waitAfterInsertMs = 300,
+    selectionStart = {
+      key: "mathValue",
+      selected: {
+        key: "value",
+        selected: { lineIndex: 0, charIndex: 0 },
+        lineIndex: 0,
+        charIndex: 0
+      },
+      lineIndex: 3,
+      charIndex: 39
+    },
+    selectionEnd = {
+      key: "mathValue",
+      selected: {
+        key: "value",
+        selected: { lineIndex: 0, charIndex: 1 },
+        lineIndex: 0,
+        charIndex: 0
+      },
+      lineIndex: 3,
+      charIndex: 39
+    }
+  } = options;
+
+  return page.evaluate(
+    async ({ inputLatex, startSelection, endSelection, selectionDelay, insertDelay }) => {
+      const editor = document.querySelector("math-type")?.reactInstance;
+      const handler = editor?.latexIoHandler;
+      if (!editor || !handler?.showImportFromLatex || !handler?.renderImportLatexBox || !handler?.onSuccessfulParse) {
+        return {
+          ok: false,
+          reason: "Required runtime hooks are unavailable"
+        };
+      }
+
+      editor.clearSelection?.();
+      editor.setCursorInputFocus?.(true);
+      editor.setCursorMathTypeFocus?.(true);
+      editor.setSelection?.(startSelection, endSelection);
+      await new Promise((resolve) => setTimeout(resolve, selectionDelay));
+
+      const selectedBefore = handler.getSelectedLatex?.("latex-latex", false) ?? "";
+      const before = JSON.stringify(editor.state?.mainModel ?? null);
+      editor.setSelected?.(endSelection);
+      await new Promise((resolve) => setTimeout(resolve, selectionDelay));
+
+      handler.showImportFromLatex();
+      const element = handler.renderImportLatexBox();
+      const DialogType = element?.type;
+      const parseLatex = DialogType?.prototype?.parseLatex;
+      if (typeof parseLatex !== "function") {
+        return {
+          ok: false,
+          reason: "Dialog parser function is unavailable"
+        };
+      }
+
+      const parserLike = {
+        props: {
+          ...(element.props ?? {}),
+          forMathMode: true
+        },
+        wrapInMathContainer: DialogType.prototype.wrapInMathContainer
+      };
+      const parsed = parseLatex.call(parserLike, inputLatex);
+      const payload = parsed?.[0]?.blocks?.[0]?.elements?.mathValue?.lines;
+      if (!Array.isArray(payload) || payload.length === 0) {
+        return {
+          ok: false,
+          reason: "Parser returned an invalid payload"
+        };
+      }
+
+      handler.onSuccessfulParse(payload);
+      await new Promise((resolve) => setTimeout(resolve, insertDelay));
+
+      const afterModel = editor.state?.mainModel ?? null;
+      const after = JSON.stringify(afterModel);
+      const targetLineBlocks = afterModel?.lines?.[3]?.blocks ?? [];
+      const targetLineTexts = [];
+      const collectTexts = (value) => {
+        if (!value || typeof value !== "object") return;
+        if (typeof value.text === "string") {
+          targetLineTexts.push(value.text);
+        }
+        if (Array.isArray(value.blocks)) {
+          for (const block of value.blocks) collectTexts(block);
+        }
+        if (Array.isArray(value.lines)) {
+          for (const line of value.lines) collectTexts(line);
+        }
+        for (const child of Object.values(value.elements ?? {})) {
+          collectTexts(child);
+        }
+      };
+      for (const block of targetLineBlocks) {
+        collectTexts(block);
+      }
+      const combinedTargetLineText = targetLineTexts.join("");
+
+      return {
+        ok: true,
+        changed: before !== after,
+        selectedBefore,
+        dialogStillOpen: Boolean(document.querySelector(".import-latex")),
+        afterModelJson: after,
+        targetLineTexts,
+        combinedTargetLineText,
+        targetLineHas53: combinedTargetLineText.includes("53"),
+        targetLineHasEquals: combinedTargetLineText.includes("=")
+      };
+    },
+    {
+      inputLatex: insertionLatex,
+      startSelection: selectionStart,
+      endSelection: selectionEnd,
+      selectionDelay: waitAfterSelectionMs,
+      insertDelay: waitAfterInsertMs
+    }
+  );
+}
+
 export async function readPageSummary(page) {
   return page.evaluate(() => {
     const safeDescribe = (value, depth = 0) => {
