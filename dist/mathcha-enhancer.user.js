@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Enhanced Mathcha.io - AI Integration
 // @namespace    http://tampermonkey.net/
-// @version      2.3
+// @version      2.4
 // @description  AI integration for Mathcha.io
 // @author       Your name
 // @match        https://*.mathcha.io/*
@@ -13,166 +13,1039 @@
 // ==/UserScript==
 "use strict";
 (() => {
+  // src/config.ts
+  var SCRIPT_VERSION = "2.4";
+  var PYODIDE_VERSION = "0.29.3";
+  var PYODIDE_INDEX_URL = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
+  var PYODIDE_SCRIPT_URL = `${PYODIDE_INDEX_URL}pyodide.js`;
+  var EXTENDED_PARSER_VERSION = "1.11.0";
+  var ANTLR4_RUNTIME_VERSION = "4.13.2";
+  var PERSIST_ROOT = "/mathcha-helper-cache";
+  var PERSIST_ACTIVE_ROOT = `${PERSIST_ROOT}/active`;
+  var PERSIST_ACTIVE_SITE_PACKAGES = `${PERSIST_ACTIVE_ROOT}/site-packages`;
+  var PERSIST_STAGING_ROOT = `${PERSIST_ROOT}/staging`;
+  var PERSIST_STAGING_SITE_PACKAGES = `${PERSIST_STAGING_ROOT}/site-packages`;
+  var PERSIST_BACKUP_ROOT = `${PERSIST_ROOT}/backup`;
+  var PERSIST_STATE_FILE = `${PERSIST_ROOT}/cache-state.json`;
+  var config = {
+    aiShortcuts: {
+      copyLatex: "'",
+      analyze: ";",
+      symbolab: ".",
+      answer: "/",
+      pasteFromLatex: ","
+    },
+    delay: {
+      standard: 200,
+      retry: [500, 1e3]
+    },
+    maxRetries: 2,
+    aiServices: {
+      claude: {
+        name: "Claude AI",
+        url: "https://claude.ai/new?q=%s"
+      },
+      chatgpt: {
+        name: "ChatGPT",
+        url: "https://chatgpt.com/?q=%s"
+      },
+      gemini: {
+        name: "Google Gemini",
+        url: "https://gemini.google.com/?q=%s"
+      }
+    },
+    solver: {
+      defaultAnswerFormat: "fraction",
+      decimalPlaces: 6
+    }
+  };
+  var ANSWER_FORMAT_STORAGE_KEY = "answerFormat";
+  var answerFormatLabels = {
+    fraction: "Exact Fraction",
+    decimal: "Decimal",
+    mixed: "Mixed Number"
+  };
+  var getAnswerFormat = () => {
+    const stored = GM_getValue(ANSWER_FORMAT_STORAGE_KEY, config.solver.defaultAnswerFormat);
+    return stored === "fraction" || stored === "decimal" || stored === "mixed" ? stored : config.solver.defaultAnswerFormat;
+  };
+  var setAnswerFormat = (format) => {
+    GM_setValue(ANSWER_FORMAT_STORAGE_KEY, format);
+  };
+  var cycleAnswerFormat = () => {
+    const formats = ["fraction", "decimal", "mixed"];
+    const current = getAnswerFormat();
+    const next = formats[(formats.indexOf(current) + 1) % formats.length];
+    setAnswerFormat(next);
+    return next;
+  };
+
+  // src/menu.ts
+  function createMenuIntegration({
+    aiTooltip,
+    log,
+    logError,
+    mathcha,
+    notify,
+    services,
+    solveAndInsertAnswer,
+    updateAnswerFormatUi: updateAnswerFormatUi2,
+    describeSolverError: describeSolverError2
+  }) {
+    return {
+      createMenuItem(text, shortcut, onClick) {
+        const item = document.createElement("ct-item");
+        item.className = "clipboard";
+        item.tabIndex = -1;
+        const icon = document.createElement("ct-icon");
+        const iconGlyph = document.createElement("i");
+        iconGlyph.className = "fa fa-magic";
+        iconGlyph.setAttribute("aria-hidden", "true");
+        icon.appendChild(iconGlyph);
+        const name = document.createElement("ct-name");
+        name.textContent = `${text} `;
+        if (shortcut) {
+          const span = document.createElement("span");
+          span.style.fontSize = "11px";
+          span.style.color = "lightgray";
+          span.textContent = `(Ctrl+Alt+${shortcut})`;
+          name.appendChild(span);
+        }
+        item.append(icon, name);
+        if (onClick) {
+          item.addEventListener("click", () => {
+            void onClick();
+          });
+        }
+        return item;
+      },
+      injectCustomMenu() {
+        const observer = new MutationObserver((mutations) => {
+          for (const mutation of mutations) {
+            for (const node of mutation.addedNodes) {
+              if (node instanceof Element && node.matches("context-menu-container")) {
+                this.addCustomItems(node);
+              }
+            }
+          }
+        });
+        observer.observe(document.body, {
+          childList: true,
+          subtree: true
+        });
+      },
+      addCustomItems(menuContainer) {
+        const menus = menuContainer.querySelector("ct-menus");
+        if (!menus) return;
+        const separator = document.createElement("ct-separator");
+        menus.appendChild(separator);
+        const lastAiService = GM_getValue("lastAiService", "claude") ?? "claude";
+        const items = [
+          {
+            text: `Answer Format: ${answerFormatLabels[getAnswerFormat()]}`,
+            shortcut: "",
+            handler: async () => {
+              const nextFormat = cycleAnswerFormat();
+              updateAnswerFormatUi2(aiTooltip);
+              notify(`Answer format: ${answerFormatLabels[nextFormat]}`);
+            }
+          },
+          {
+            text: "Paste From LaTeX",
+            shortcut: config.aiShortcuts.pasteFromLatex,
+            handler: async () => {
+              try {
+                const latex = await mathcha.importFromLatexClipboard();
+                notify(`Imported LaTeX: ${latex.slice(0, 40)}${latex.length > 40 ? "..." : ""}`);
+              } catch (error) {
+                logError("Menu handler import error:", error);
+                const message = error instanceof Error ? error.message : "Failed to import LaTeX";
+                notify(`Import error: ${message}`, true);
+              }
+            }
+          },
+          {
+            text: "Analyze with AI",
+            shortcut: config.aiShortcuts.analyze,
+            handler: async () => {
+              try {
+                const latex = await mathcha.copyToClipboard();
+                services.openAiService(latex, lastAiService);
+              } catch {
+                return;
+              }
+            }
+          },
+          {
+            text: "Solve with Symbolab",
+            shortcut: config.aiShortcuts.symbolab,
+            handler: async () => {
+              try {
+                const latex = await mathcha.copyToClipboard();
+                services.symbolab(latex);
+              } catch {
+                return;
+              }
+            }
+          },
+          {
+            text: "Solve with Python",
+            shortcut: config.aiShortcuts.answer,
+            handler: async () => {
+              try {
+                log("Menu item: Solve with Python clicked");
+                await solveAndInsertAnswer();
+              } catch (error) {
+                logError("Menu handler error:", error);
+                notify(describeSolverError2(error), true);
+              }
+            }
+          }
+        ];
+        items.forEach((item) => {
+          menus.appendChild(this.createMenuItem(item.text, item.shortcut, item.handler));
+        });
+      }
+    };
+  }
+
+  // src/python-runtime.ts
+  function createPythonRuntime({
+    pageWindow,
+    log,
+    notify
+  }) {
+    let pyodidePromise = null;
+    let scriptLoadPromise = null;
+    let solverPromise = null;
+    let persistentFsPromise = null;
+    const syncFs = async (pyodide, populate) => {
+      const fs = pyodide.FS;
+      await new Promise((resolve, reject) => {
+        fs.syncfs(populate, (error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve();
+        });
+      });
+    };
+    const ensurePersistentFs = async (pyodide) => {
+      if (!persistentFsPromise) {
+        persistentFsPromise = (async () => {
+          const fs = pyodide.FS;
+          if (!fs.analyzePath(PERSIST_ROOT).exists) fs.mkdir(PERSIST_ROOT);
+          for (const dir of [PERSIST_ACTIVE_ROOT, PERSIST_STAGING_ROOT, PERSIST_BACKUP_ROOT]) {
+            if (!fs.analyzePath(dir).exists) fs.mkdir(dir);
+          }
+          for (const dir of [PERSIST_ACTIVE_SITE_PACKAGES, PERSIST_STAGING_SITE_PACKAGES]) {
+            if (!fs.analyzePath(dir).exists) fs.mkdir(dir);
+          }
+          try {
+            fs.mount(fs.filesystems.IDBFS, { root: "." }, PERSIST_ROOT);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (!message.includes("already mounted")) throw error;
+          }
+          log("Syncing persistent Python cache from IndexedDB");
+          await syncFs(pyodide, true);
+        })().catch((error) => {
+          persistentFsPromise = null;
+          throw error;
+        });
+      }
+      return persistentFsPromise;
+    };
+    const readCacheState = async (pyodide) => {
+      const fs = pyodide.FS;
+      if (!fs.analyzePath(PERSIST_STATE_FILE).exists) {
+        return { status: "empty" };
+      }
+      try {
+        return JSON.parse(fs.readFile(PERSIST_STATE_FILE, { encoding: "utf8" }));
+      } catch {
+        return { status: "broken" };
+      }
+    };
+    const writeCacheState = async (pyodide, state) => {
+      const fs = pyodide.FS;
+      fs.writeFile(PERSIST_STATE_FILE, JSON.stringify(state));
+      await syncFs(pyodide, false);
+    };
+    const ensurePersistentImports = async (pyodide) => {
+      await pyodide.runPythonAsync(`
+import importlib
+import sys
+
+cache_path = "${PERSIST_ACTIVE_SITE_PACKAGES}"
+if cache_path not in sys.path:
+    sys.path.insert(0, cache_path)
+importlib.invalidate_caches()
+`);
+    };
+    const suspendActiveCacheImports = async (pyodide) => {
+      await pyodide.runPythonAsync(`
+import importlib
+import sys
+
+active_cache_path = "${PERSIST_ACTIVE_SITE_PACKAGES}"
+
+while active_cache_path in sys.path:
+    sys.path.remove(active_cache_path)
+
+for module_name in (
+    "latex2sympy2_extended",
+    "latex2sympy2_extended.antlr_parser",
+    "latex2sympy2_extended.latex2sympy2",
+    "antlr4",
+):
+    sys.modules.pop(module_name, None)
+
+importlib.invalidate_caches()
+`);
+    };
+    const restoreActiveCacheImports = async (pyodide) => {
+      await pyodide.runPythonAsync(`
+import importlib
+import sys
+
+active_cache_path = "${PERSIST_ACTIVE_SITE_PACKAGES}"
+
+if active_cache_path not in sys.path:
+    sys.path.insert(0, active_cache_path)
+
+importlib.invalidate_caches()
+`);
+    };
+    const validateRuntimeSolverSmokeTest = async (pyodide) => {
+      const result = await pyodide.runPythonAsync(`
+import json
+
+try:
+    solver_result = mathcha_solve_latex(r"2^{5} + 2^{4} + 2^{2} + 2^{0}")
+    parsed = json.loads(solver_result)
+    assert parsed["latex"] == "53"
+    assert parsed["is_rational"] is True
+    assert parsed["numerator"] == "53"
+    assert parsed["denominator"] == "1"
+    validation_result = json.dumps({"ok": True})
+except Exception as error:
+    validation_result = json.dumps({"ok": False, "error": repr(error)})
+
+validation_result
+`);
+      return JSON.parse(String(result));
+    };
+    const hasPersistedSolverFiles = (pyodide) => {
+      const fs = pyodide.FS;
+      return [
+        `${PERSIST_ACTIVE_SITE_PACKAGES}/latex2sympy2_extended`,
+        `${PERSIST_ACTIVE_SITE_PACKAGES}/antlr4`,
+        `${PERSIST_ACTIVE_SITE_PACKAGES}/antlr4_python3_runtime-${ANTLR4_RUNTIME_VERSION}.dist-info`,
+        `${PERSIST_ACTIVE_SITE_PACKAGES}/latex2sympy2_extended-${EXTENDED_PARSER_VERSION}.dist-info`
+      ].every((path) => fs.analyzePath(path).exists);
+    };
+    const validatePersistedSolver = async (pyodide) => {
+      const result = await pyodide.runPythonAsync(`
+import importlib
+import importlib.metadata
+import importlib.util
+import json
+import sys
+
+for module_name in (
+    "latex2sympy2_extended",
+    "latex2sympy2_extended.antlr_parser",
+    "latex2sympy2_extended.latex2sympy2",
+    "antlr4",
+):
+    sys.modules.pop(module_name, None)
+
+importlib.invalidate_caches()
+
+try:
+    assert importlib.util.find_spec("latex2sympy2_extended")
+    assert importlib.util.find_spec("antlr4")
+    assert importlib.metadata.version("antlr4-python3-runtime") == "${ANTLR4_RUNTIME_VERSION}"
+    assert importlib.metadata.version("latex2sympy2-extended") == "${EXTENDED_PARSER_VERSION}"
+    from latex2sympy2_extended import latex2sympy
+    from sympy import simplify, latex
+    import antlr4
+    expr = latex2sympy(r"2^{5} + 2^{4} + 2^{2} + 2^{0}")
+    result = latex(simplify(expr.doit().doit()))
+    assert result == "53"
+    validation_result = json.dumps({"ok": True})
+except Exception as error:
+    validation_result = json.dumps({"ok": False, "error": repr(error)})
+
+validation_result
+`);
+      return JSON.parse(String(result));
+    };
+    const clearStagingSolver = async (pyodide) => {
+      await pyodide.runPythonAsync(`
+import pathlib
+import shutil
+
+for root_path_str in ("${PERSIST_STAGING_SITE_PACKAGES}", "${PERSIST_BACKUP_ROOT}"):
+    root_path = pathlib.Path(root_path_str)
+    root_path.mkdir(parents=True, exist_ok=True)
+    for child in list(root_path.iterdir()):
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+`);
+    };
+    const stageInstalledSolver = async (pyodide) => {
+      await pyodide.runPythonAsync(`
+import site
+import pathlib
+import shutil
+
+site_packages_root = pathlib.Path(site.getsitepackages()[0])
+active_root = pathlib.Path("${PERSIST_ACTIVE_ROOT}")
+staging_root = pathlib.Path("${PERSIST_STAGING_ROOT}")
+backup_root = pathlib.Path("${PERSIST_BACKUP_ROOT}")
+active_site_packages = pathlib.Path("${PERSIST_ACTIVE_SITE_PACKAGES}")
+staging_site_packages = pathlib.Path("${PERSIST_STAGING_SITE_PACKAGES}")
+
+for root in (active_root, staging_root, backup_root, active_site_packages, staging_site_packages):
+    root.mkdir(parents=True, exist_ok=True)
+
+for child in list(staging_site_packages.iterdir()):
+    if child.is_dir():
+        shutil.rmtree(child)
+    else:
+        child.unlink()
+
+for package_dir_name in ("latex2sympy2_extended", "antlr4"):
+    source_path = site_packages_root / package_dir_name
+    if not source_path.exists():
+        raise ImportError(f"Cannot find installed package directory: {package_dir_name}")
+
+    destination_path = staging_site_packages / package_dir_name
+    if destination_path.exists():
+        shutil.rmtree(destination_path)
+    shutil.copytree(source_path, destination_path)
+
+for metadata_dir in (
+    site_packages_root / "antlr4_python3_runtime-${ANTLR4_RUNTIME_VERSION}.dist-info",
+    site_packages_root / "latex2sympy2_extended-${EXTENDED_PARSER_VERSION}.dist-info",
+):
+    if metadata_dir.exists():
+        destination_path = staging_site_packages / metadata_dir.name
+        if destination_path.exists():
+            shutil.rmtree(destination_path)
+        shutil.copytree(metadata_dir, destination_path)
+`);
+    };
+    const promoteStagedSolver = async (pyodide) => {
+      await pyodide.runPythonAsync(`
+import pathlib
+import shutil
+
+backup_root = pathlib.Path("${PERSIST_BACKUP_ROOT}")
+active_site_packages = pathlib.Path("${PERSIST_ACTIVE_SITE_PACKAGES}")
+staging_site_packages = pathlib.Path("${PERSIST_STAGING_SITE_PACKAGES}")
+
+for root in (backup_root, active_site_packages, staging_site_packages):
+    root.mkdir(parents=True, exist_ok=True)
+
+for child in list(backup_root.iterdir()):
+    if child.is_dir():
+        shutil.rmtree(child)
+    else:
+        child.unlink()
+
+for child in list(active_site_packages.iterdir()):
+    shutil.move(str(child), backup_root / child.name)
+
+for child in list(staging_site_packages.iterdir()):
+    shutil.move(str(child), active_site_packages / child.name)
+
+for child in list(backup_root.iterdir()):
+    if child.is_dir():
+        shutil.rmtree(child)
+    else:
+        child.unlink()
+`);
+      await writeCacheState(pyodide, { status: "ready", version: SCRIPT_VERSION });
+      log("Saving persistent Python cache to IndexedDB");
+    };
+    const validateStagedSolver = async (pyodide) => {
+      const result = await pyodide.runPythonAsync(`
+import importlib
+import importlib.metadata
+import importlib.util
+import json
+import sys
+
+active_cache_path = "${PERSIST_ACTIVE_SITE_PACKAGES}"
+staging_cache_path = "${PERSIST_STAGING_SITE_PACKAGES}"
+
+while active_cache_path in sys.path:
+    sys.path.remove(active_cache_path)
+if staging_cache_path not in sys.path:
+    sys.path.insert(0, staging_cache_path)
+
+for module_name in (
+    "latex2sympy2_extended",
+    "latex2sympy2_extended.antlr_parser",
+    "latex2sympy2_extended.latex2sympy2",
+    "antlr4",
+):
+    sys.modules.pop(module_name, None)
+
+importlib.invalidate_caches()
+
+try:
+    assert importlib.util.find_spec("latex2sympy2_extended")
+    assert importlib.util.find_spec("antlr4")
+    assert importlib.metadata.version("antlr4-python3-runtime") == "${ANTLR4_RUNTIME_VERSION}"
+    assert importlib.metadata.version("latex2sympy2-extended") == "${EXTENDED_PARSER_VERSION}"
+    from latex2sympy2_extended import latex2sympy
+    from sympy import simplify, latex
+    import antlr4
+    expr = latex2sympy(r"2^{5} + 2^{4} + 2^{2} + 2^{0}")
+    result = latex(simplify(expr.doit().doit()))
+    assert result == "53"
+    validation_result = json.dumps({"ok": True})
+except Exception as error:
+    validation_result = json.dumps({"ok": False, "error": repr(error)})
+finally:
+    while staging_cache_path in sys.path:
+        sys.path.remove(staging_cache_path)
+    if active_cache_path not in sys.path:
+        sys.path.insert(0, active_cache_path)
+    importlib.invalidate_caches()
+
+validation_result
+`);
+      return JSON.parse(String(result));
+    };
+    const ensurePyodideScript = async () => {
+      if (typeof pageWindow.loadPyodide === "function") return;
+      if (!scriptLoadPromise) {
+        scriptLoadPromise = new Promise((resolve, reject) => {
+          const existingScript = document.querySelector(
+            `script[data-mathcha-helper='pyodide'][src='${PYODIDE_SCRIPT_URL}']`
+          );
+          if (existingScript) {
+            existingScript.addEventListener("load", () => resolve(), { once: true });
+            existingScript.addEventListener("error", () => reject(new Error("Failed to load Pyodide script")), {
+              once: true
+            });
+            return;
+          }
+          const script = document.createElement("script");
+          script.src = PYODIDE_SCRIPT_URL;
+          script.async = true;
+          script.dataset.mathchaHelper = "pyodide";
+          script.onload = () => resolve();
+          script.onerror = () => reject(new Error("Failed to load Pyodide script"));
+          document.head.appendChild(script);
+        }).then(() => {
+          if (typeof pageWindow.loadPyodide !== "function") {
+            throw new Error("Pyodide loaded but did not expose loadPyodide");
+          }
+        }).catch((error) => {
+          scriptLoadPromise = null;
+          throw error;
+        });
+      }
+      return scriptLoadPromise;
+    };
+    const getPyodide = async () => {
+      if (!pyodidePromise) {
+        notify("Loading Python runtime...");
+        pyodidePromise = ensurePyodideScript().then(() => {
+          const loadPyodide = pageWindow.loadPyodide;
+          if (typeof loadPyodide !== "function") {
+            throw new Error("loadPyodide is unavailable");
+          }
+          return loadPyodide({ indexURL: PYODIDE_INDEX_URL });
+        }).catch((error) => {
+          pyodidePromise = null;
+          throw error;
+        });
+      }
+      return pyodidePromise;
+    };
+    const ensureSolver = async () => {
+      const pyodide = await getPyodide();
+      await ensurePersistentFs(pyodide);
+      await ensurePersistentImports(pyodide);
+      notify("Loading core math packages...");
+      await pyodide.loadPackage(["mpmath", "sympy"]);
+      if (!solverPromise) {
+        solverPromise = (async () => {
+          const cacheState = await readCacheState(pyodide);
+          let cachedSolver = cacheState.status === "ready" && hasPersistedSolverFiles(pyodide);
+          if (cacheState.status === "installing" || cacheState.status === "broken") {
+            log(`Cached solver state is ${cacheState.status}, clearing staging cache`);
+            await clearStagingSolver(pyodide);
+          }
+          if (cachedSolver) {
+            const validCache = await validatePersistedSolver(pyodide);
+            if (validCache.ok) {
+              log("Using cached solver packages from IndexedDB");
+            } else {
+              log("Cached solver validation failed:", validCache.error ?? "unknown reason");
+              log("Cached solver validation failed, keeping active cache until staged reinstall succeeds");
+              await writeCacheState(pyodide, { status: "broken" });
+              cachedSolver = false;
+            }
+          }
+          if (!cachedSolver) {
+            await writeCacheState(pyodide, { status: "installing", version: SCRIPT_VERSION });
+            notify("Loading Python solver packages...");
+            await pyodide.loadPackage("micropip");
+            await suspendActiveCacheImports(pyodide);
+            const micropip = pyodide.pyimport("micropip");
+            try {
+              log(`Installing antlr4-python3-runtime==${ANTLR4_RUNTIME_VERSION}`);
+              await micropip.install([`antlr4-python3-runtime==${ANTLR4_RUNTIME_VERSION}`], { reinstall: true });
+              log(`Installing latex2sympy2-extended[antlr4-13-2]==${EXTENDED_PARSER_VERSION}`);
+              await micropip.install([`latex2sympy2-extended[antlr4-13-2]==${EXTENDED_PARSER_VERSION}`], {
+                reinstall: true
+              });
+            } finally {
+              micropip.destroy?.();
+            }
+            try {
+              await stageInstalledSolver(pyodide);
+              const validStagedCache = await validateStagedSolver(pyodide);
+              if (!validStagedCache.ok) {
+                throw new Error(`Staged solver cache validation failed: ${validStagedCache.error ?? "unknown reason"}`);
+              }
+              await promoteStagedSolver(pyodide);
+            } finally {
+              await restoreActiveCacheImports(pyodide);
+            }
+          } else {
+            await writeCacheState(pyodide, { status: "ready", version: SCRIPT_VERSION });
+          }
+          notify("Preparing local LaTeX solver...");
+          await pyodide.runPythonAsync(`
+import json
+
+from latex2sympy2_extended import latex2sympy
+from sympy import simplify, latex
+
+def mathcha_solve_latex(input_latex):
+    expr = latex2sympy(input_latex)
+    result = simplify(expr.doit().doit())
+    payload = {
+        "latex": latex(result),
+        "is_rational": bool(getattr(result, "is_rational", False)),
+        "numerator": None,
+        "denominator": None,
+        "decimal": None,
+    }
+    if payload["is_rational"]:
+        numerator, denominator = result.as_numer_denom()
+        payload["numerator"] = str(int(numerator))
+        payload["denominator"] = str(int(denominator))
+    return json.dumps(payload)
+`);
+          const runtimeSmokeTest = await validateRuntimeSolverSmokeTest(pyodide);
+          if (!runtimeSmokeTest.ok) {
+            throw new Error(`Runtime solver smoke test failed: ${runtimeSmokeTest.error ?? "unknown reason"}`);
+          }
+        })().catch((error) => {
+          solverPromise = null;
+          void writeCacheState(pyodide, { status: "broken", version: SCRIPT_VERSION });
+          throw error;
+        });
+      }
+      await solverPromise;
+      return pyodide;
+    };
+    return {
+      async helloWorld() {
+        const pyodide = await getPyodide();
+        return String(pyodide.runPython("'hello world from python'"));
+      },
+      async solveLatex(latexInput) {
+        const pyodide = await ensureSolver();
+        const globals = pyodide.globals;
+        globals.set("mathcha_input_latex", latexInput);
+        try {
+          const result = await pyodide.runPythonAsync("mathcha_solve_latex(mathcha_input_latex)");
+          const parsed = JSON.parse(String(result));
+          return {
+            latex: typeof parsed.latex === "string" ? parsed.latex : "",
+            isRational: Boolean(parsed.is_rational),
+            numerator: typeof parsed.numerator === "string" ? parsed.numerator : null,
+            denominator: typeof parsed.denominator === "string" ? parsed.denominator : null,
+            decimal: typeof parsed.decimal === "string" ? parsed.decimal : null
+          };
+        } finally {
+          globals.delete("mathcha_input_latex");
+        }
+      },
+      async warmup() {
+        const pyodide = await getPyodide();
+        const hello = String(pyodide.runPython("'hello world from python'"));
+        log("Python startup test passed:", hello);
+        await ensureSolver();
+      }
+    };
+  }
+
+  // src/solver-format.ts
+  var formatRationalAsLatex = (numerator, denominator) => {
+    if (denominator === "1") return numerator;
+    return `\\frac{${numerator}}{${denominator}}`;
+  };
+  var trimTrailingZeros = (value) => value.replace(/(\.\d*?[1-9])0+$/u, "$1").replace(/\.0+$/u, "");
+  var formatDecimalFromRational = (numerator, denominator, places) => {
+    const num = BigInt(numerator);
+    const den = BigInt(denominator);
+    if (den === 0n) {
+      throw new Error("Cannot format decimal from zero denominator");
+    }
+    const negative = num < 0n !== den < 0n;
+    const absNum = num < 0n ? -num : num;
+    const absDen = den < 0n ? -den : den;
+    const scale = 10n ** BigInt(places);
+    const roundedScaled = (absNum * scale * 2n + absDen) / (2n * absDen);
+    const integerPart = roundedScaled / scale;
+    const fractionalPart = roundedScaled % scale;
+    const decimal = places > 0 ? `${integerPart}.${fractionalPart.toString().padStart(places, "0")}` : integerPart.toString();
+    const trimmed = trimTrailingZeros(decimal);
+    return negative && trimmed !== "0" ? `-${trimmed}` : trimmed;
+  };
+  var formatMixedFromRational = (numerator, denominator) => {
+    const num = BigInt(numerator);
+    const den = BigInt(denominator);
+    if (den === 0n) {
+      throw new Error("Cannot format mixed number from zero denominator");
+    }
+    const normalizedDen = den < 0n ? -den : den;
+    const normalizedNum = den < 0n ? -num : num;
+    const whole = normalizedNum / normalizedDen;
+    const remainder = normalizedNum % normalizedDen;
+    if (remainder === 0n) {
+      return whole.toString();
+    }
+    const absWhole = whole < 0n ? -whole : whole;
+    const absRemainder = remainder < 0n ? -remainder : remainder;
+    if (whole === 0n) {
+      return formatRationalAsLatex(normalizedNum.toString(), normalizedDen.toString());
+    }
+    if (whole < 0n) {
+      return `-${absWhole.toString()}-${formatRationalAsLatex(absRemainder.toString(), normalizedDen.toString())}`;
+    }
+    return `${whole.toString()}+${formatRationalAsLatex(absRemainder.toString(), normalizedDen.toString())}`;
+  };
+  var formatIntegerInBase = (value, base) => {
+    const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    let integer = BigInt(value);
+    const isNegative = integer < 0n;
+    if (isNegative) {
+      integer = -integer;
+    }
+    if (integer === 0n) {
+      return `0_{${base}}`;
+    }
+    let digits = "";
+    const bigBase = BigInt(base);
+    while (integer > 0n) {
+      const digit = Number(integer % bigBase);
+      digits = alphabet[digit] + digits;
+      integer /= bigBase;
+    }
+    return `${isNegative ? "-" : ""}${digits}_{${base}}`;
+  };
+  var formatBaseConvertedResult = (result, targetBase) => {
+    if (!result.isRational || !result.numerator || !result.denominator) {
+      throw new Error("Base conversion requires an exact rational solver result");
+    }
+    if (result.denominator !== "1") {
+      throw new Error("Base conversion currently supports integer results only");
+    }
+    return {
+      latex: formatIntegerInBase(result.numerator, targetBase),
+      fallbackReason: null
+    };
+  };
+  var formatSolverResult = (result, format) => {
+    if (format === "fraction") {
+      return { latex: result.latex, fallbackReason: null };
+    }
+    if (result.isRational && result.numerator && result.denominator) {
+      if (format === "decimal") {
+        return {
+          latex: formatDecimalFromRational(result.numerator, result.denominator, config.solver.decimalPlaces),
+          fallbackReason: null
+        };
+      }
+      return {
+        latex: formatMixedFromRational(result.numerator, result.denominator),
+        fallbackReason: null
+      };
+    }
+    return {
+      latex: result.latex,
+      fallbackReason: `${format}-requires-rational`
+    };
+  };
+  var buildInsertedAnswerLatex = (solverInput, formattedAnswer) => {
+    const rawInsertionLatex = `${solverInput.hasEquationTail ? "" : "="}${formattedAnswer}`;
+    return solverInput.isWrappedMathSelection ? "$" + rawInsertionLatex + "$" : rawInsertionLatex;
+  };
+  var describeSolverError = (error) => {
+    const rawMessage = error instanceof Error ? error.message : String(error);
+    if (/Target base must be between 2 and 36/u.test(rawMessage)) {
+      return "Use a target base between 2 and 36, like \\rightarrow _{2}.";
+    }
+    if (/Base output syntax is incomplete/u.test(rawMessage)) {
+      return "Finish the base output syntax, for example \\rightarrow _{2}.";
+    }
+    const invalidDigitMatch = rawMessage.match(/Invalid digit '(.+)' for base (\d+)/u);
+    if (invalidDigitMatch) {
+      return `Digit ${invalidDigitMatch[1]} is not valid in base ${invalidDigitMatch[2]}.`;
+    }
+    const unsupportedBaseMatch = rawMessage.match(/Unsupported input base: (\d+)/u);
+    if (unsupportedBaseMatch) {
+      return `Input base ${unsupportedBaseMatch[1]} is not supported. Use a base from 2 to 36.`;
+    }
+    if (/Base conversion currently supports integer results only/u.test(rawMessage)) {
+      return "Base conversion currently works only for whole-number results.";
+    }
+    if (/No runtime LaTeX selection available for solver/u.test(rawMessage)) {
+      return "Select a math expression first.";
+    }
+    if (/Selected LaTeX is empty after solver normalization/u.test(rawMessage)) {
+      return "The selected expression is empty after cleanup.";
+    }
+    if (/I don't understand this|I expected|syntaxError|InputMismatchException/u.test(rawMessage)) {
+      return "Mathcha Helper could not parse that expression. Check the base syntax and try again.";
+    }
+    return "Failed to solve the selected expression.";
+  };
+
+  // src/services.ts
+  function createServices({ notify }) {
+    return {
+      openAiService(latex, serviceKey) {
+        const service = config.aiServices[serviceKey];
+        if (!service) {
+          notify("Invalid AI service selected", true);
+          return;
+        }
+        const dialog = document.createElement("div");
+        const overlay = document.createElement("div");
+        Object.assign(dialog.style, {
+          position: "fixed",
+          top: "50%",
+          left: "50%",
+          transform: "translate(-50%, -50%)",
+          backgroundColor: "#fff",
+          padding: "20px",
+          borderRadius: "8px",
+          boxShadow: "0 2px 10px rgba(0,0,0,0.1)",
+          zIndex: "10000",
+          width: "90%",
+          maxWidth: "500px"
+        });
+        Object.assign(overlay.style, {
+          position: "fixed",
+          top: "0",
+          left: "0",
+          right: "0",
+          bottom: "0",
+          backgroundColor: "rgba(0,0,0,0.5)",
+          zIndex: "9999"
+        });
+        const serviceSelector = document.createElement("select");
+        Object.assign(serviceSelector.style, {
+          width: "100%",
+          padding: "8px",
+          marginBottom: "10px",
+          borderRadius: "4px",
+          border: "1px solid #ccc"
+        });
+        Object.entries(config.aiServices).forEach(([key, selectedService]) => {
+          const option = document.createElement("option");
+          option.value = key;
+          option.textContent = selectedService.name;
+          if (key === serviceKey) option.selected = true;
+          serviceSelector.appendChild(option);
+        });
+        const textarea = document.createElement("textarea");
+        Object.assign(textarea.style, {
+          width: "100%",
+          height: "150px",
+          marginBottom: "10px",
+          padding: "8px",
+          borderRadius: "4px",
+          border: "1px solid #ccc"
+        });
+        textarea.value = GM_getValue("lastPrompt", "Enter your prompt here.");
+        const buttons = document.createElement("div");
+        buttons.style.textAlign = "right";
+        const submit = document.createElement("button");
+        submit.textContent = "Send to AI";
+        Object.assign(submit.style, {
+          padding: "8px 16px",
+          marginLeft: "10px",
+          backgroundColor: "#4CAF50",
+          color: "white",
+          border: "none",
+          borderRadius: "4px",
+          cursor: "pointer"
+        });
+        const cancel = document.createElement("button");
+        cancel.textContent = "Cancel";
+        Object.assign(cancel.style, {
+          padding: "8px 16px",
+          backgroundColor: "#ddd",
+          border: "none",
+          borderRadius: "4px",
+          cursor: "pointer"
+        });
+        const cleanup = () => {
+          dialog.remove();
+          overlay.remove();
+        };
+        submit.onclick = () => {
+          const selectedService = config.aiServices[serviceSelector.value];
+          const prompt = textarea.value.trim();
+          GM_setValue("lastPrompt", prompt);
+          GM_setValue("lastAiService", serviceSelector.value);
+          const url = selectedService.url.replace("%s", encodeURIComponent(`${prompt}
+
+${latex}`));
+          GM_openInTab(url, { active: true });
+          cleanup();
+        };
+        cancel.onclick = cleanup;
+        textarea.onkeydown = (event) => {
+          if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault();
+            submit.click();
+          }
+          if (event.key === "Escape") {
+            cleanup();
+          }
+        };
+        dialog.append(serviceSelector, textarea, buttons);
+        buttons.append(cancel, submit);
+        document.body.append(overlay, dialog);
+        textarea.focus();
+        textarea.select();
+      },
+      symbolab(latex) {
+        const cleaned = latex.replace(/\$/g, "").trim();
+        GM_openInTab(`https://www.symbolab.com/solver/step-by-step/${encodeURIComponent(cleaned)}`, {
+          active: true
+        });
+      }
+    };
+  }
+
+  // src/ui.ts
+  function loadMathJax() {
+    if (window.MathJax) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      window.MathJax = {
+        tex: {
+          inlineMath: [["$", "$"], ["\\(", "\\)"]],
+          displayMath: [["$$", "$$"], ["\\[", "\\]"]]
+        },
+        svg: {
+          fontCache: "global"
+        }
+      };
+      const script = document.createElement("script");
+      script.src = "https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js";
+      script.async = true;
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error("Failed to load MathJax"));
+      document.head.appendChild(script);
+    });
+  }
+  function createNotifier() {
+    let current = null;
+    return (message, isError = false) => {
+      current?.remove();
+      const toast = document.createElement("div");
+      Object.assign(toast.style, {
+        position: "fixed",
+        bottom: "20px",
+        right: "20px",
+        padding: "8px 16px",
+        borderRadius: "4px",
+        backgroundColor: isError ? "rgba(200,0,0,0.8)" : "rgba(0,0,0,0.7)",
+        color: "#fff",
+        zIndex: "9999"
+      });
+      toast.textContent = message;
+      document.body.appendChild(toast);
+      current = toast;
+      setTimeout(() => toast.remove(), 2e3);
+    };
+  }
+  function createTooltip() {
+    const aiTooltip = document.createElement("div");
+    aiTooltip.style.cssText = `
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: white;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    padding: 10px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    z-index: 10000;
+    font-family: Arial, sans-serif;
+    font-size: 14px;
+    display: none;
+  `;
+    aiTooltip.innerHTML = `
+    <div style="margin-bottom: 8px; font-weight: bold;">AI Shortcuts (Ctrl+Alt+Key)</div>
+    <div style="margin: 4px 0;">
+      <kbd>${config.aiShortcuts.copyLatex}</kbd> - Copy LaTeX
+    </div>
+    <div style="margin: 4px 0;">
+      <kbd>${config.aiShortcuts.analyze}</kbd> - Analyze with AI
+    </div>
+    <div style="margin: 4px 0;">
+      <kbd>${config.aiShortcuts.symbolab}</kbd> - Open in Symbolab
+    </div>
+    <div style="margin: 4px 0;">
+      <kbd>${config.aiShortcuts.answer}</kbd> - Solve with Python
+    </div>
+    <div style="margin: 4px 0;">
+      <kbd>${config.aiShortcuts.pasteFromLatex}</kbd> - Paste From LaTeX
+    </div>
+    <div style="margin: 8px 0 0; padding-top: 8px; border-top: 1px solid #eee;">
+      Answer format:
+      <strong data-answer-format-label>${answerFormatLabels[getAnswerFormat()]}</strong>
+    </div>
+  `;
+    document.body.appendChild(aiTooltip);
+    return aiTooltip;
+  }
+  function updateAnswerFormatUi(tooltip) {
+    const formatLabel = tooltip?.querySelector("[data-answer-format-label]");
+    if (formatLabel) {
+      formatLabel.textContent = answerFormatLabels[getAnswerFormat()];
+    }
+  }
+
   // src/script.ts
   (() => {
     "use strict";
-    const SCRIPT_VERSION = "2.3";
-    const PYODIDE_VERSION = "0.29.3";
-    const PYODIDE_INDEX_URL = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
-    const PYODIDE_SCRIPT_URL = `${PYODIDE_INDEX_URL}pyodide.js`;
-    const EXTENDED_PARSER_VERSION = "1.11.0";
-    const ANTLR4_RUNTIME_VERSION = "4.13.2";
-    const PERSIST_ROOT = "/mathcha-helper-cache";
-    const PERSIST_ACTIVE_ROOT = `${PERSIST_ROOT}/active`;
-    const PERSIST_ACTIVE_SITE_PACKAGES = `${PERSIST_ACTIVE_ROOT}/site-packages`;
-    const PERSIST_STAGING_ROOT = `${PERSIST_ROOT}/staging`;
-    const PERSIST_STAGING_SITE_PACKAGES = `${PERSIST_STAGING_ROOT}/site-packages`;
-    const PERSIST_BACKUP_ROOT = `${PERSIST_ROOT}/backup`;
-    const PERSIST_STATE_FILE = `${PERSIST_ROOT}/cache-state.json`;
     const pageWindow = unsafeWindow;
     const logLabel = `[Mathcha Helper v${SCRIPT_VERSION}]`;
     const log = (...args) => console.log(logLabel, ...args);
     const logError = (...args) => console.error(logLabel, ...args);
-    function loadMathJax() {
-      if (window.MathJax) return Promise.resolve();
-      return new Promise((resolve, reject) => {
-        window.MathJax = {
-          tex: {
-            inlineMath: [["$", "$"], ["\\(", "\\)"]],
-            displayMath: [["$$", "$$"], ["\\[", "\\]"]]
-          },
-          svg: {
-            fontCache: "global"
-          }
-        };
-        const script = document.createElement("script");
-        script.src = "https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js";
-        script.async = true;
-        script.onload = () => resolve();
-        script.onerror = () => reject(new Error("Failed to load MathJax"));
-        document.head.appendChild(script);
-      });
-    }
-    const config = {
-      aiShortcuts: {
-        copyLatex: "'",
-        analyze: ";",
-        symbolab: ".",
-        answer: "/",
-        pasteFromLatex: ","
-      },
-      delay: {
-        standard: 200,
-        retry: [500, 1e3]
-      },
-      maxRetries: 2,
-      aiServices: {
-        claude: {
-          name: "Claude AI",
-          url: "https://claude.ai/new?q=%s"
-        },
-        chatgpt: {
-          name: "ChatGPT",
-          url: "https://chatgpt.com/?q=%s"
-        },
-        gemini: {
-          name: "Google Gemini",
-          url: "https://gemini.google.com/?q=%s"
-        }
-      },
-      solver: {
-        defaultAnswerFormat: "fraction",
-        decimalPlaces: 6
-      }
-    };
-    const ANSWER_FORMAT_STORAGE_KEY = "answerFormat";
-    const answerFormatLabels = {
-      fraction: "Exact Fraction",
-      decimal: "Decimal",
-      mixed: "Mixed Number"
-    };
-    const getAnswerFormat = () => {
-      const stored = GM_getValue(ANSWER_FORMAT_STORAGE_KEY, config.solver.defaultAnswerFormat);
-      return stored === "fraction" || stored === "decimal" || stored === "mixed" ? stored : config.solver.defaultAnswerFormat;
-    };
-    const setAnswerFormat = (format) => {
-      GM_setValue(ANSWER_FORMAT_STORAGE_KEY, format);
-    };
-    const cycleAnswerFormat = () => {
-      const formats = ["fraction", "decimal", "mixed"];
-      const current = getAnswerFormat();
-      const next = formats[(formats.indexOf(current) + 1) % formats.length];
-      setAnswerFormat(next);
-      return next;
-    };
-    const notify = /* @__PURE__ */ (() => {
-      let current = null;
-      return (message, isError = false) => {
-        current?.remove();
-        const toast = document.createElement("div");
-        Object.assign(toast.style, {
-          position: "fixed",
-          bottom: "20px",
-          right: "20px",
-          padding: "8px 16px",
-          borderRadius: "4px",
-          backgroundColor: isError ? "rgba(200,0,0,0.8)" : "rgba(0,0,0,0.7)",
-          color: "#fff",
-          zIndex: "9999"
-        });
-        toast.textContent = message;
-        document.body.appendChild(toast);
-        current = toast;
-        setTimeout(() => toast.remove(), 2e3);
-      };
-    })();
-    const createTooltip = () => {
-      const aiTooltip2 = document.createElement("div");
-      aiTooltip2.style.cssText = `
-      position: fixed;
-      top: 20px;
-      right: 20px;
-      background: white;
-      border: 1px solid #ccc;
-      border-radius: 5px;
-      padding: 10px;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-      z-index: 10000;
-      font-family: Arial, sans-serif;
-      font-size: 14px;
-      display: none;
-    `;
-      aiTooltip2.innerHTML = `
-      <div style="margin-bottom: 8px; font-weight: bold;">AI Shortcuts (Ctrl+Alt+Key)</div>
-      <div style="margin: 4px 0;">
-        <kbd>${config.aiShortcuts.copyLatex}</kbd> - Copy LaTeX
-      </div>
-      <div style="margin: 4px 0;">
-        <kbd>${config.aiShortcuts.analyze}</kbd> - Analyze with AI
-      </div>
-      <div style="margin: 4px 0;">
-        <kbd>${config.aiShortcuts.symbolab}</kbd> - Open in Symbolab
-      </div>
-      <div style="margin: 4px 0;">
-        <kbd>${config.aiShortcuts.answer}</kbd> - Solve with Python
-      </div>
-      <div style="margin: 4px 0;">
-        <kbd>${config.aiShortcuts.pasteFromLatex}</kbd> - Paste From LaTeX
-      </div>
-      <div style="margin: 8px 0 0; padding-top: 8px; border-top: 1px solid #eee;">
-        Answer format:
-        <strong data-answer-format-label>${answerFormatLabels[getAnswerFormat()]}</strong>
-      </div>
-    `;
-      document.body.appendChild(aiTooltip2);
-      return aiTooltip2;
-    };
-    const updateAnswerFormatUi = (tooltip) => {
-      const formatLabel = tooltip?.querySelector("[data-answer-format-label]");
-      if (formatLabel) {
-        formatLabel.textContent = answerFormatLabels[getAnswerFormat()];
-      }
-    };
+    const notify = createNotifier();
     const mathcha = {
       getLatexIoHandler(editor) {
         return editor?.latexIoHandler ?? null;
@@ -769,746 +1642,8 @@
         throw new Error("Unreachable");
       }
     };
-    const services = {
-      openAiService(latex, serviceKey) {
-        const service = config.aiServices[serviceKey];
-        if (!service) {
-          notify("Invalid AI service selected", true);
-          return;
-        }
-        const dialog = document.createElement("div");
-        const overlay = document.createElement("div");
-        Object.assign(dialog.style, {
-          position: "fixed",
-          top: "50%",
-          left: "50%",
-          transform: "translate(-50%, -50%)",
-          backgroundColor: "#fff",
-          padding: "20px",
-          borderRadius: "8px",
-          boxShadow: "0 2px 10px rgba(0,0,0,0.1)",
-          zIndex: "10000",
-          width: "90%",
-          maxWidth: "500px"
-        });
-        Object.assign(overlay.style, {
-          position: "fixed",
-          top: "0",
-          left: "0",
-          right: "0",
-          bottom: "0",
-          backgroundColor: "rgba(0,0,0,0.5)",
-          zIndex: "9999"
-        });
-        const serviceSelector = document.createElement("select");
-        Object.assign(serviceSelector.style, {
-          width: "100%",
-          padding: "8px",
-          marginBottom: "10px",
-          borderRadius: "4px",
-          border: "1px solid #ccc"
-        });
-        Object.entries(config.aiServices).forEach(([key, selectedService]) => {
-          const option = document.createElement("option");
-          option.value = key;
-          option.textContent = selectedService.name;
-          if (key === serviceKey) option.selected = true;
-          serviceSelector.appendChild(option);
-        });
-        const textarea = document.createElement("textarea");
-        Object.assign(textarea.style, {
-          width: "100%",
-          height: "150px",
-          marginBottom: "10px",
-          padding: "8px",
-          borderRadius: "4px",
-          border: "1px solid #ccc"
-        });
-        textarea.value = GM_getValue("lastPrompt", "Enter your prompt here.");
-        const buttons = document.createElement("div");
-        buttons.style.textAlign = "right";
-        const submit = document.createElement("button");
-        submit.textContent = "Send to AI";
-        Object.assign(submit.style, {
-          padding: "8px 16px",
-          marginLeft: "10px",
-          backgroundColor: "#4CAF50",
-          color: "white",
-          border: "none",
-          borderRadius: "4px",
-          cursor: "pointer"
-        });
-        const cancel = document.createElement("button");
-        cancel.textContent = "Cancel";
-        Object.assign(cancel.style, {
-          padding: "8px 16px",
-          backgroundColor: "#ddd",
-          border: "none",
-          borderRadius: "4px",
-          cursor: "pointer"
-        });
-        const cleanup = () => {
-          dialog.remove();
-          overlay.remove();
-        };
-        submit.onclick = () => {
-          const selectedService = config.aiServices[serviceSelector.value];
-          const prompt = textarea.value.trim();
-          GM_setValue("lastPrompt", prompt);
-          GM_setValue("lastAiService", serviceSelector.value);
-          const url = selectedService.url.replace("%s", encodeURIComponent(`${prompt}
-
-${latex}`));
-          GM_openInTab(url, { active: true });
-          cleanup();
-        };
-        cancel.onclick = cleanup;
-        textarea.onkeydown = (event) => {
-          if (event.key === "Enter" && !event.shiftKey) {
-            event.preventDefault();
-            submit.click();
-          }
-          if (event.key === "Escape") {
-            cleanup();
-          }
-        };
-        dialog.append(serviceSelector, textarea, buttons);
-        buttons.append(cancel, submit);
-        document.body.append(overlay, dialog);
-        textarea.focus();
-        textarea.select();
-      },
-      symbolab(latex) {
-        const cleaned = latex.replace(/\$/g, "").trim();
-        GM_openInTab(`https://www.symbolab.com/solver/step-by-step/${encodeURIComponent(cleaned)}`, {
-          active: true
-        });
-      }
-    };
-    const formatRationalAsLatex = (numerator, denominator) => {
-      if (denominator === "1") return numerator;
-      return `\\frac{${numerator}}{${denominator}}`;
-    };
-    const trimTrailingZeros = (value) => value.replace(/(\.\d*?[1-9])0+$/u, "$1").replace(/\.0+$/u, "");
-    const formatDecimalFromRational = (numerator, denominator, places) => {
-      const num = BigInt(numerator);
-      const den = BigInt(denominator);
-      if (den === 0n) {
-        throw new Error("Cannot format decimal from zero denominator");
-      }
-      const negative = num < 0n !== den < 0n;
-      const absNum = num < 0n ? -num : num;
-      const absDen = den < 0n ? -den : den;
-      const scale = 10n ** BigInt(places);
-      const roundedScaled = (absNum * scale * 2n + absDen) / (2n * absDen);
-      const integerPart = roundedScaled / scale;
-      const fractionalPart = roundedScaled % scale;
-      const decimal = places > 0 ? `${integerPart}.${fractionalPart.toString().padStart(places, "0")}` : integerPart.toString();
-      const trimmed = trimTrailingZeros(decimal);
-      return negative && trimmed !== "0" ? `-${trimmed}` : trimmed;
-    };
-    const formatMixedFromRational = (numerator, denominator) => {
-      const num = BigInt(numerator);
-      const den = BigInt(denominator);
-      if (den === 0n) {
-        throw new Error("Cannot format mixed number from zero denominator");
-      }
-      const normalizedDen = den < 0n ? -den : den;
-      const normalizedNum = den < 0n ? -num : num;
-      const whole = normalizedNum / normalizedDen;
-      const remainder = normalizedNum % normalizedDen;
-      if (remainder === 0n) {
-        return whole.toString();
-      }
-      const absWhole = whole < 0n ? -whole : whole;
-      const absRemainder = remainder < 0n ? -remainder : remainder;
-      if (whole === 0n) {
-        return formatRationalAsLatex(normalizedNum.toString(), normalizedDen.toString());
-      }
-      if (whole < 0n) {
-        return `-${absWhole.toString()}-${formatRationalAsLatex(absRemainder.toString(), normalizedDen.toString())}`;
-      }
-      return `${whole.toString()}+${formatRationalAsLatex(absRemainder.toString(), normalizedDen.toString())}`;
-    };
-    const formatIntegerInBase = (value, base) => {
-      const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-      let integer = BigInt(value);
-      const isNegative = integer < 0n;
-      if (isNegative) {
-        integer = -integer;
-      }
-      if (integer === 0n) {
-        return `0_{${base}}`;
-      }
-      let digits = "";
-      const bigBase = BigInt(base);
-      while (integer > 0n) {
-        const digit = Number(integer % bigBase);
-        digits = alphabet[digit] + digits;
-        integer /= bigBase;
-      }
-      return `${isNegative ? "-" : ""}${digits}_{${base}}`;
-    };
-    const formatBaseConvertedResult = (result, targetBase) => {
-      if (!result.isRational || !result.numerator || !result.denominator) {
-        throw new Error("Base conversion requires an exact rational solver result");
-      }
-      if (result.denominator !== "1") {
-        throw new Error("Base conversion currently supports integer results only");
-      }
-      return {
-        latex: formatIntegerInBase(result.numerator, targetBase),
-        fallbackReason: null
-      };
-    };
-    const formatSolverResult = (result, format) => {
-      if (format === "fraction") {
-        return { latex: result.latex, fallbackReason: null };
-      }
-      if (result.isRational && result.numerator && result.denominator) {
-        if (format === "decimal") {
-          return {
-            latex: formatDecimalFromRational(result.numerator, result.denominator, config.solver.decimalPlaces),
-            fallbackReason: null
-          };
-        }
-        return {
-          latex: formatMixedFromRational(result.numerator, result.denominator),
-          fallbackReason: null
-        };
-      }
-      return {
-        latex: result.latex,
-        fallbackReason: `${format}-requires-rational`
-      };
-    };
-    const buildInsertedAnswerLatex = (solverInput, formattedAnswer) => {
-      const rawInsertionLatex = `${solverInput.hasEquationTail ? "" : "="}${formattedAnswer}`;
-      return solverInput.isWrappedMathSelection ? "$" + rawInsertionLatex + "$" : rawInsertionLatex;
-    };
-    const describeSolverError = (error) => {
-      const rawMessage = error instanceof Error ? error.message : String(error);
-      if (/Target base must be between 2 and 36/u.test(rawMessage)) {
-        return "Use a target base between 2 and 36, like \\rightarrow _{2}.";
-      }
-      if (/Base output syntax is incomplete/u.test(rawMessage)) {
-        return "Finish the base output syntax, for example \\rightarrow _{2}.";
-      }
-      const invalidDigitMatch = rawMessage.match(/Invalid digit '(.+)' for base (\d+)/u);
-      if (invalidDigitMatch) {
-        return `Digit ${invalidDigitMatch[1]} is not valid in base ${invalidDigitMatch[2]}.`;
-      }
-      const unsupportedBaseMatch = rawMessage.match(/Unsupported input base: (\d+)/u);
-      if (unsupportedBaseMatch) {
-        return `Input base ${unsupportedBaseMatch[1]} is not supported. Use a base from 2 to 36.`;
-      }
-      if (/Base conversion currently supports integer results only/u.test(rawMessage)) {
-        return "Base conversion currently works only for whole-number results.";
-      }
-      if (/No runtime LaTeX selection available for solver/u.test(rawMessage)) {
-        return "Select a math expression first.";
-      }
-      if (/Selected LaTeX is empty after solver normalization/u.test(rawMessage)) {
-        return "The selected expression is empty after cleanup.";
-      }
-      if (/I don't understand this|I expected|syntaxError|InputMismatchException/u.test(rawMessage)) {
-        return "Mathcha Helper could not parse that expression. Check the base syntax and try again.";
-      }
-      return "Failed to solve the selected expression.";
-    };
-    const pythonRuntime = /* @__PURE__ */ (() => {
-      let pyodidePromise = null;
-      let scriptLoadPromise = null;
-      let solverPromise = null;
-      let persistentFsPromise = null;
-      const syncFs = async (pyodide, populate) => {
-        const fs = pyodide.FS;
-        await new Promise((resolve, reject) => {
-          fs.syncfs(populate, (error) => {
-            if (error) {
-              reject(error);
-              return;
-            }
-            resolve();
-          });
-        });
-      };
-      const ensurePersistentFs = async (pyodide) => {
-        if (!persistentFsPromise) {
-          persistentFsPromise = (async () => {
-            const fs = pyodide.FS;
-            if (!fs.analyzePath(PERSIST_ROOT).exists) {
-              fs.mkdir(PERSIST_ROOT);
-            }
-            for (const dir of [PERSIST_ACTIVE_ROOT, PERSIST_STAGING_ROOT, PERSIST_BACKUP_ROOT]) {
-              if (!fs.analyzePath(dir).exists) {
-                fs.mkdir(dir);
-              }
-            }
-            for (const dir of [PERSIST_ACTIVE_SITE_PACKAGES, PERSIST_STAGING_SITE_PACKAGES]) {
-              if (!fs.analyzePath(dir).exists) {
-                fs.mkdir(dir);
-              }
-            }
-            try {
-              fs.mount(fs.filesystems.IDBFS, { root: "." }, PERSIST_ROOT);
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error);
-              if (!message.includes("already mounted")) {
-                throw error;
-              }
-            }
-            log("Syncing persistent Python cache from IndexedDB");
-            await syncFs(pyodide, true);
-          })().catch((error) => {
-            persistentFsPromise = null;
-            throw error;
-          });
-        }
-        return persistentFsPromise;
-      };
-      const readCacheState = async (pyodide) => {
-        const fs = pyodide.FS;
-        if (!fs.analyzePath(PERSIST_STATE_FILE).exists) {
-          return { status: "empty" };
-        }
-        try {
-          return JSON.parse(fs.readFile(PERSIST_STATE_FILE, { encoding: "utf8" }));
-        } catch {
-          return { status: "broken" };
-        }
-      };
-      const writeCacheState = async (pyodide, state) => {
-        const fs = pyodide.FS;
-        fs.writeFile(PERSIST_STATE_FILE, JSON.stringify(state));
-        await syncFs(pyodide, false);
-      };
-      const ensurePersistentImports = async (pyodide) => {
-        await pyodide.runPythonAsync(`
-import importlib
-import sys
-
-cache_path = "${PERSIST_ACTIVE_SITE_PACKAGES}"
-if cache_path not in sys.path:
-    sys.path.insert(0, cache_path)
-importlib.invalidate_caches()
-`);
-      };
-      const suspendActiveCacheImports = async (pyodide) => {
-        await pyodide.runPythonAsync(`
-import importlib
-import sys
-
-active_cache_path = "${PERSIST_ACTIVE_SITE_PACKAGES}"
-
-while active_cache_path in sys.path:
-    sys.path.remove(active_cache_path)
-
-for module_name in (
-    "latex2sympy2_extended",
-    "latex2sympy2_extended.antlr_parser",
-    "latex2sympy2_extended.latex2sympy2",
-    "antlr4",
-):
-    sys.modules.pop(module_name, None)
-
-importlib.invalidate_caches()
-`);
-      };
-      const restoreActiveCacheImports = async (pyodide) => {
-        await pyodide.runPythonAsync(`
-import importlib
-import sys
-
-active_cache_path = "${PERSIST_ACTIVE_SITE_PACKAGES}"
-
-if active_cache_path not in sys.path:
-    sys.path.insert(0, active_cache_path)
-
-importlib.invalidate_caches()
-`);
-      };
-      const validateRuntimeSolverSmokeTest = async (pyodide) => {
-        const result = await pyodide.runPythonAsync(`
-import json
-
-try:
-    solver_result = mathcha_solve_latex(r"2^{5} + 2^{4} + 2^{2} + 2^{0}")
-    parsed = json.loads(solver_result)
-    assert parsed["latex"] == "53"
-    assert parsed["is_rational"] is True
-    assert parsed["numerator"] == "53"
-    assert parsed["denominator"] == "1"
-    validation_result = json.dumps({"ok": True})
-except Exception as error:
-    validation_result = json.dumps({"ok": False, "error": repr(error)})
-
-validation_result
-`);
-        return JSON.parse(String(result));
-      };
-      const hasPersistedSolverFiles = (pyodide) => {
-        const fs = pyodide.FS;
-        const requiredPaths = [
-          `${PERSIST_ACTIVE_SITE_PACKAGES}/latex2sympy2_extended`,
-          `${PERSIST_ACTIVE_SITE_PACKAGES}/antlr4`,
-          `${PERSIST_ACTIVE_SITE_PACKAGES}/antlr4_python3_runtime-${ANTLR4_RUNTIME_VERSION}.dist-info`,
-          `${PERSIST_ACTIVE_SITE_PACKAGES}/latex2sympy2_extended-${EXTENDED_PARSER_VERSION}.dist-info`
-        ];
-        return requiredPaths.every((path) => fs.analyzePath(path).exists);
-      };
-      const validatePersistedSolver = async (pyodide) => {
-        const result = await pyodide.runPythonAsync(`
-import importlib
-import importlib.metadata
-import importlib.util
-import json
-import sys
-
-for module_name in (
-    "latex2sympy2_extended",
-    "latex2sympy2_extended.antlr_parser",
-    "latex2sympy2_extended.latex2sympy2",
-    "antlr4",
-):
-    sys.modules.pop(module_name, None)
-
-importlib.invalidate_caches()
-
-try:
-    assert importlib.util.find_spec("latex2sympy2_extended")
-    assert importlib.util.find_spec("antlr4")
-    assert importlib.metadata.version("antlr4-python3-runtime") == "${ANTLR4_RUNTIME_VERSION}"
-    assert importlib.metadata.version("latex2sympy2-extended") == "${EXTENDED_PARSER_VERSION}"
-    from latex2sympy2_extended import latex2sympy
-    from sympy import simplify, latex
-    import antlr4
-    expr = latex2sympy(r"2^{5} + 2^{4} + 2^{2} + 2^{0}")
-    result = latex(simplify(expr.doit().doit()))
-    assert result == "53"
-    validation_result = json.dumps({"ok": True})
-except Exception as error:
-    validation_result = json.dumps({"ok": False, "error": repr(error)})
-
-validation_result
-`);
-        return JSON.parse(String(result));
-      };
-      const clearStagingSolver = async (pyodide) => {
-        await pyodide.runPythonAsync(`
-import pathlib
-import shutil
-
-for root_path_str in ("${PERSIST_STAGING_SITE_PACKAGES}", "${PERSIST_BACKUP_ROOT}"):
-    root_path = pathlib.Path(root_path_str)
-    root_path.mkdir(parents=True, exist_ok=True)
-    for child in list(root_path.iterdir()):
-        if child.is_dir():
-            shutil.rmtree(child)
-        else:
-            child.unlink()
-`);
-      };
-      const stageInstalledSolver = async (pyodide) => {
-        await pyodide.runPythonAsync(`
-import site
-import pathlib
-import shutil
-
-site_packages_root = pathlib.Path(site.getsitepackages()[0])
-active_root = pathlib.Path("${PERSIST_ACTIVE_ROOT}")
-staging_root = pathlib.Path("${PERSIST_STAGING_ROOT}")
-backup_root = pathlib.Path("${PERSIST_BACKUP_ROOT}")
-active_site_packages = pathlib.Path("${PERSIST_ACTIVE_SITE_PACKAGES}")
-staging_site_packages = pathlib.Path("${PERSIST_STAGING_SITE_PACKAGES}")
-
-for root in (active_root, staging_root, backup_root, active_site_packages, staging_site_packages):
-    root.mkdir(parents=True, exist_ok=True)
-
-for child in list(staging_site_packages.iterdir()):
-    if child.is_dir():
-        shutil.rmtree(child)
-    else:
-        child.unlink()
-
-for package_dir_name in ("latex2sympy2_extended", "antlr4"):
-    source_path = site_packages_root / package_dir_name
-    if not source_path.exists():
-        raise ImportError(f"Cannot find installed package directory: {package_dir_name}")
-
-    destination_path = staging_site_packages / package_dir_name
-    if destination_path.exists():
-        shutil.rmtree(destination_path)
-    shutil.copytree(source_path, destination_path)
-
-for metadata_dir in (
-    site_packages_root / "antlr4_python3_runtime-${ANTLR4_RUNTIME_VERSION}.dist-info",
-    site_packages_root / "latex2sympy2_extended-${EXTENDED_PARSER_VERSION}.dist-info",
-):
-    if metadata_dir.exists():
-        destination_path = staging_site_packages / metadata_dir.name
-        if destination_path.exists():
-            shutil.rmtree(destination_path)
-        shutil.copytree(metadata_dir, destination_path)
-`);
-      };
-      const promoteStagedSolver = async (pyodide) => {
-        await pyodide.runPythonAsync(`
-import pathlib
-import shutil
-
-backup_root = pathlib.Path("${PERSIST_BACKUP_ROOT}")
-active_site_packages = pathlib.Path("${PERSIST_ACTIVE_SITE_PACKAGES}")
-staging_site_packages = pathlib.Path("${PERSIST_STAGING_SITE_PACKAGES}")
-
-for root in (backup_root, active_site_packages, staging_site_packages):
-    root.mkdir(parents=True, exist_ok=True)
-
-for child in list(backup_root.iterdir()):
-    if child.is_dir():
-        shutil.rmtree(child)
-    else:
-        child.unlink()
-
-for child in list(active_site_packages.iterdir()):
-    shutil.move(str(child), backup_root / child.name)
-
-for child in list(staging_site_packages.iterdir()):
-    shutil.move(str(child), active_site_packages / child.name)
-
-for child in list(backup_root.iterdir()):
-    if child.is_dir():
-        shutil.rmtree(child)
-    else:
-        child.unlink()
-`);
-        await writeCacheState(pyodide, { status: "ready", version: SCRIPT_VERSION });
-        log("Saving persistent Python cache to IndexedDB");
-      };
-      const validateStagedSolver = async (pyodide) => {
-        const result = await pyodide.runPythonAsync(`
-import importlib
-import importlib.metadata
-import importlib.util
-import json
-import sys
-
-active_cache_path = "${PERSIST_ACTIVE_SITE_PACKAGES}"
-staging_cache_path = "${PERSIST_STAGING_SITE_PACKAGES}"
-
-while active_cache_path in sys.path:
-    sys.path.remove(active_cache_path)
-if staging_cache_path not in sys.path:
-    sys.path.insert(0, staging_cache_path)
-
-for module_name in (
-    "latex2sympy2_extended",
-    "latex2sympy2_extended.antlr_parser",
-    "latex2sympy2_extended.latex2sympy2",
-    "antlr4",
-):
-    sys.modules.pop(module_name, None)
-
-importlib.invalidate_caches()
-
-try:
-    assert importlib.util.find_spec("latex2sympy2_extended")
-    assert importlib.util.find_spec("antlr4")
-    assert importlib.metadata.version("antlr4-python3-runtime") == "${ANTLR4_RUNTIME_VERSION}"
-    assert importlib.metadata.version("latex2sympy2-extended") == "${EXTENDED_PARSER_VERSION}"
-    from latex2sympy2_extended import latex2sympy
-    from sympy import simplify, latex
-    import antlr4
-    expr = latex2sympy(r"2^{5} + 2^{4} + 2^{2} + 2^{0}")
-    result = latex(simplify(expr.doit().doit()))
-    assert result == "53"
-    validation_result = json.dumps({"ok": True})
-except Exception as error:
-    validation_result = json.dumps({"ok": False, "error": repr(error)})
-finally:
-    while staging_cache_path in sys.path:
-        sys.path.remove(staging_cache_path)
-    if active_cache_path not in sys.path:
-        sys.path.insert(0, active_cache_path)
-    importlib.invalidate_caches()
-
-validation_result
-`);
-        return JSON.parse(String(result));
-      };
-      const ensurePyodideScript = async () => {
-        if (typeof pageWindow.loadPyodide === "function") {
-          return;
-        }
-        if (!scriptLoadPromise) {
-          scriptLoadPromise = new Promise((resolve, reject) => {
-            const existingScript = document.querySelector(
-              `script[data-mathcha-helper='pyodide'][src='${PYODIDE_SCRIPT_URL}']`
-            );
-            if (existingScript) {
-              existingScript.addEventListener("load", () => resolve(), { once: true });
-              existingScript.addEventListener("error", () => reject(new Error("Failed to load Pyodide script")), {
-                once: true
-              });
-              return;
-            }
-            const script = document.createElement("script");
-            script.src = PYODIDE_SCRIPT_URL;
-            script.async = true;
-            script.dataset.mathchaHelper = "pyodide";
-            script.onload = () => resolve();
-            script.onerror = () => reject(new Error("Failed to load Pyodide script"));
-            document.head.appendChild(script);
-          }).then(() => {
-            if (typeof pageWindow.loadPyodide !== "function") {
-              throw new Error("Pyodide loaded but did not expose loadPyodide");
-            }
-          }).catch((error) => {
-            scriptLoadPromise = null;
-            throw error;
-          });
-        }
-        return scriptLoadPromise;
-      };
-      const getPyodide = async () => {
-        if (!pyodidePromise) {
-          notify("Loading Python runtime...");
-          pyodidePromise = ensurePyodideScript().then(() => {
-            const loadPyodide = pageWindow.loadPyodide;
-            if (typeof loadPyodide !== "function") {
-              throw new Error("loadPyodide is unavailable");
-            }
-            return loadPyodide({ indexURL: PYODIDE_INDEX_URL });
-          }).catch((error) => {
-            pyodidePromise = null;
-            throw error;
-          });
-        }
-        return pyodidePromise;
-      };
-      const ensureSolver = async () => {
-        const pyodide = await getPyodide();
-        await ensurePersistentFs(pyodide);
-        await ensurePersistentImports(pyodide);
-        notify("Loading core math packages...");
-        await pyodide.loadPackage(["mpmath", "sympy"]);
-        if (!solverPromise) {
-          solverPromise = (async () => {
-            const cacheState = await readCacheState(pyodide);
-            let cachedSolver = cacheState.status === "ready" && hasPersistedSolverFiles(pyodide);
-            if (cacheState.status === "installing" || cacheState.status === "broken") {
-              log(`Cached solver state is ${cacheState.status}, clearing staging cache`);
-              await clearStagingSolver(pyodide);
-            }
-            if (cachedSolver) {
-              const validCache = await validatePersistedSolver(pyodide);
-              if (validCache.ok) {
-                log("Using cached solver packages from IndexedDB");
-              } else {
-                log("Cached solver validation failed:", validCache.error ?? "unknown reason");
-                log("Cached solver validation failed, keeping active cache until staged reinstall succeeds");
-                await writeCacheState(pyodide, { status: "broken" });
-                cachedSolver = false;
-              }
-            }
-            if (!cachedSolver) {
-              await writeCacheState(pyodide, { status: "installing", version: SCRIPT_VERSION });
-              notify("Loading Python solver packages...");
-              await pyodide.loadPackage("micropip");
-              await suspendActiveCacheImports(pyodide);
-              const micropip = pyodide.pyimport("micropip");
-              try {
-                log(`Installing antlr4-python3-runtime==${ANTLR4_RUNTIME_VERSION}`);
-                await micropip.install([`antlr4-python3-runtime==${ANTLR4_RUNTIME_VERSION}`], { reinstall: true });
-                log(`Installing latex2sympy2-extended[antlr4-13-2]==${EXTENDED_PARSER_VERSION}`);
-                await micropip.install([`latex2sympy2-extended[antlr4-13-2]==${EXTENDED_PARSER_VERSION}`], {
-                  reinstall: true
-                });
-              } finally {
-                micropip.destroy?.();
-              }
-              try {
-                await stageInstalledSolver(pyodide);
-                const validStagedCache = await validateStagedSolver(pyodide);
-                if (!validStagedCache.ok) {
-                  throw new Error(
-                    `Staged solver cache validation failed: ${validStagedCache.error ?? "unknown reason"}`
-                  );
-                }
-                await promoteStagedSolver(pyodide);
-              } finally {
-                await restoreActiveCacheImports(pyodide);
-              }
-            } else {
-              await writeCacheState(pyodide, { status: "ready", version: SCRIPT_VERSION });
-            }
-            notify("Preparing local LaTeX solver...");
-            await pyodide.runPythonAsync(`
-import json
-
-from latex2sympy2_extended import latex2sympy
-from sympy import simplify, latex
-
-def mathcha_solve_latex(input_latex):
-    expr = latex2sympy(input_latex)
-    result = simplify(expr.doit().doit())
-    payload = {
-        "latex": latex(result),
-        "is_rational": bool(getattr(result, "is_rational", False)),
-        "numerator": None,
-        "denominator": None,
-        "decimal": None,
-    }
-    if payload["is_rational"]:
-        numerator, denominator = result.as_numer_denom()
-        payload["numerator"] = str(int(numerator))
-        payload["denominator"] = str(int(denominator))
-    return json.dumps(payload)
-`);
-            const runtimeSmokeTest = await validateRuntimeSolverSmokeTest(pyodide);
-            if (!runtimeSmokeTest.ok) {
-              throw new Error(`Runtime solver smoke test failed: ${runtimeSmokeTest.error ?? "unknown reason"}`);
-            }
-          })().catch((error) => {
-            solverPromise = null;
-            void writeCacheState(pyodide, { status: "broken", version: SCRIPT_VERSION });
-            throw error;
-          });
-        }
-        await solverPromise;
-        return pyodide;
-      };
-      return {
-        async helloWorld() {
-          const pyodide = await getPyodide();
-          return String(pyodide.runPython("'hello world from python'"));
-        },
-        async solveLatex(latexInput) {
-          const pyodide = await ensureSolver();
-          const globals = pyodide.globals;
-          globals.set("mathcha_input_latex", latexInput);
-          try {
-            const result = await pyodide.runPythonAsync("mathcha_solve_latex(mathcha_input_latex)");
-            const parsed = JSON.parse(String(result));
-            return {
-              latex: typeof parsed.latex === "string" ? parsed.latex : "",
-              isRational: Boolean(parsed.is_rational),
-              numerator: typeof parsed.numerator === "string" ? parsed.numerator : null,
-              denominator: typeof parsed.denominator === "string" ? parsed.denominator : null,
-              decimal: typeof parsed.decimal === "string" ? parsed.decimal : null
-            };
-          } finally {
-            globals.delete("mathcha_input_latex");
-          }
-        },
-        async warmup() {
-          const pyodide = await getPyodide();
-          const hello = String(pyodide.runPython("'hello world from python'"));
-          log("Python startup test passed:", hello);
-          await ensureSolver();
-        }
-      };
-    })();
+    const services = createServices({ notify, log });
+    const pythonRuntime = createPythonRuntime({ pageWindow, log, notify });
     const solveAndInsertAnswer = async () => {
       const solverInput = await mathcha.extractSelectedLatexForSolver();
       log("LaTeX extracted:", solverInput.normalized);
@@ -1540,121 +1675,18 @@ def mathcha_solve_latex(input_latex):
       }
       return insertionLatex;
     };
-    const menuIntegration = {
-      createMenuItem(text, shortcut, onClick) {
-        const item = document.createElement("ct-item");
-        item.className = "clipboard";
-        item.tabIndex = -1;
-        const icon = document.createElement("ct-icon");
-        const iconGlyph = document.createElement("i");
-        iconGlyph.className = "fa fa-magic";
-        iconGlyph.setAttribute("aria-hidden", "true");
-        icon.appendChild(iconGlyph);
-        const name = document.createElement("ct-name");
-        name.textContent = `${text} `;
-        if (shortcut) {
-          const span = document.createElement("span");
-          span.style.fontSize = "11px";
-          span.style.color = "lightgray";
-          span.textContent = `(Ctrl+Alt+${shortcut})`;
-          name.appendChild(span);
-        }
-        item.append(icon, name);
-        if (onClick) {
-          item.addEventListener("click", () => {
-            void onClick();
-          });
-        }
-        return item;
-      },
-      injectCustomMenu() {
-        const observer = new MutationObserver((mutations) => {
-          for (const mutation of mutations) {
-            for (const node of mutation.addedNodes) {
-              if (node instanceof Element && node.matches("context-menu-container")) {
-                this.addCustomItems(node);
-              }
-            }
-          }
-        });
-        observer.observe(document.body, {
-          childList: true,
-          subtree: true
-        });
-      },
-      addCustomItems(menuContainer) {
-        const menus = menuContainer.querySelector("ct-menus");
-        if (!menus) return;
-        const separator = document.createElement("ct-separator");
-        menus.appendChild(separator);
-        const lastAiService = GM_getValue("lastAiService", "claude") ?? "claude";
-        const items = [
-          {
-            text: `Answer Format: ${answerFormatLabels[getAnswerFormat()]}`,
-            shortcut: "",
-            handler: async () => {
-              const nextFormat = cycleAnswerFormat();
-              updateAnswerFormatUi(aiTooltip);
-              notify(`Answer format: ${answerFormatLabels[nextFormat]}`);
-            }
-          },
-          {
-            text: "Paste From LaTeX",
-            shortcut: config.aiShortcuts.pasteFromLatex,
-            handler: async () => {
-              try {
-                const latex = await mathcha.importFromLatexClipboard();
-                notify(`Imported LaTeX: ${latex.slice(0, 40)}${latex.length > 40 ? "..." : ""}`);
-              } catch (error) {
-                logError("Menu handler import error:", error);
-                const message = error instanceof Error ? error.message : "Failed to import LaTeX";
-                notify(`Import error: ${message}`, true);
-              }
-            }
-          },
-          {
-            text: "Analyze with AI",
-            shortcut: config.aiShortcuts.analyze,
-            handler: async () => {
-              try {
-                const latex = await mathcha.copyToClipboard();
-                services.openAiService(latex, lastAiService);
-              } catch {
-                return;
-              }
-            }
-          },
-          {
-            text: "Solve with Symbolab",
-            shortcut: config.aiShortcuts.symbolab,
-            handler: async () => {
-              try {
-                const latex = await mathcha.copyToClipboard();
-                services.symbolab(latex);
-              } catch {
-                return;
-              }
-            }
-          },
-          {
-            text: "Solve with Python",
-            shortcut: config.aiShortcuts.answer,
-            handler: async () => {
-              try {
-                log("Menu item: Solve with Python clicked");
-                await solveAndInsertAnswer();
-              } catch (error) {
-                logError("Menu handler error:", error);
-                notify(describeSolverError(error), true);
-              }
-            }
-          }
-        ];
-        items.forEach((item) => {
-          menus.appendChild(this.createMenuItem(item.text, item.shortcut, item.handler));
-        });
-      }
-    };
+    const aiTooltip = createTooltip();
+    const menuIntegration = createMenuIntegration({
+      aiTooltip,
+      log,
+      logError,
+      mathcha,
+      notify,
+      services,
+      solveAndInsertAnswer,
+      updateAnswerFormatUi,
+      describeSolverError
+    });
     const commands = {
       copyLatex: async () => {
         try {
@@ -1702,7 +1734,6 @@ def mathcha_solve_latex(input_latex):
         }
       }
     };
-    const aiTooltip = createTooltip();
     let isCtrlAltPressed = false;
     document.addEventListener("keydown", (event) => {
       if (event.ctrlKey && event.altKey && !event.shiftKey) {
