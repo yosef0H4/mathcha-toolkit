@@ -42,6 +42,7 @@ type SolverInput = {
   normalized: string;
   hasEquationTail: boolean;
   isWrappedMathSelection: boolean;
+  targetBase: number | null;
 };
 
 type SolverResult = {
@@ -574,18 +575,20 @@ declare global {
 
       const hasEquationTail = this.hasEquationTail(rawLatex);
       const isWrappedMathSelection = this.isWrappedMathSelection(rawLatex);
-      const normalizedLatex = this.normalizeLatexForSolver(rawLatex);
+      const normalizedResult = this.normalizeLatexForSolver(rawLatex);
       this.logRuntime("extractSelectedLatexForSolver:success", {
         latexPreview: rawLatex.slice(0, 120),
-        normalizedPreview: normalizedLatex.slice(0, 120),
+        normalizedPreview: normalizedResult.normalized.slice(0, 120),
         hasEquationTail,
-        isWrappedMathSelection
+        isWrappedMathSelection,
+        targetBase: normalizedResult.targetBase
       });
       return {
         raw: rawLatex,
-        normalized: normalizedLatex,
+        normalized: normalizedResult.normalized,
         hasEquationTail,
-        isWrappedMathSelection
+        isWrappedMathSelection,
+        targetBase: normalizedResult.targetBase
       };
     },
 
@@ -602,7 +605,7 @@ declare global {
       return normalized.includes("=");
     },
 
-    normalizeLatexForSolver(latex: string): string {
+    normalizeLatexForSolver(latex: string): { normalized: string; targetBase: number | null } {
       let normalized = latex.trim();
       normalized = this.normalizeImportLatex(normalized);
       normalized = normalized.replace(/^\\displaystyle\s*/, "").trim();
@@ -612,16 +615,97 @@ declare global {
         normalized = normalized.slice(0, equationIndex).trim();
       }
 
+      const { expression, targetBase } = this.extractBaseOutputDirective(normalized);
+      const rewrittenExpression = this.rewriteBaseAnnotatedIntegers(expression).trim();
+
       this.logRuntime("normalizeLatexForSolver:complete", {
         inputPreview: latex.slice(0, 120),
-        outputPreview: normalized.slice(0, 120)
+        outputPreview: rewrittenExpression.slice(0, 120),
+        targetBase
       });
 
-      if (!normalized) {
+      if (!rewrittenExpression) {
         throw new Error("Selected LaTeX is empty after solver normalization");
       }
 
-      return normalized;
+      return {
+        normalized: rewrittenExpression,
+        targetBase
+      };
+    },
+
+    extractBaseOutputDirective(latex: string): { expression: string; targetBase: number | null } {
+      const directiveMatch = latex.match(
+        /^(.*?)(?:\\(?:to|rightarrow)\s*_\{\s*(\d+)\s*\}|\\(?:to|rightarrow)\s*_(\d+))\s*$/u
+      );
+      if (!directiveMatch) {
+        return { expression: latex, targetBase: null };
+      }
+
+      const parsedBase = Number.parseInt(directiveMatch[2] ?? directiveMatch[3] ?? "", 10);
+      if (!Number.isInteger(parsedBase) || parsedBase < 2 || parsedBase > 36) {
+        throw new Error("Target base must be between 2 and 36");
+      }
+
+      return {
+        expression: directiveMatch[1].trim(),
+        targetBase: parsedBase
+      };
+    },
+
+    rewriteBaseAnnotatedIntegers(latex: string): string {
+      const tokenPattern = /([A-Za-z0-9]+)\s*_\{\s*(\d+)\s*\}|([A-Za-z0-9]+)\s*_(\d+)/gu;
+      const isBoundary = (char: string | undefined): boolean =>
+        char === undefined || /[\s+\-*/^=(),[\]{}]/u.test(char);
+
+      return latex.replace(tokenPattern, (match, bracedDigits, bracedBase, plainDigits, plainBase, offset, source) => {
+        const digits = String(bracedDigits ?? plainDigits ?? "");
+        const rawBase = String(bracedBase ?? plainBase ?? "");
+        const beforeChar = offset > 0 ? source[offset - 1] : undefined;
+        const afterChar = source[offset + match.length];
+
+        if (!isBoundary(beforeChar) || !isBoundary(afterChar)) {
+          return match;
+        }
+
+        if (!/\d/u.test(digits) && digits.length <= 1) {
+          return match;
+        }
+
+        const base = Number.parseInt(rawBase, 10);
+        if (!Number.isInteger(base) || base < 2 || base > 36) {
+          throw new Error(`Unsupported input base: ${rawBase}`);
+        }
+
+        return this.convertBaseIntegerLiteralToDecimal(digits, base);
+      });
+    },
+
+    convertBaseIntegerLiteralToDecimal(digits: string, base: number): string {
+      const normalizedDigits = digits.toUpperCase();
+      let value = 0n;
+
+      for (const char of normalizedDigits) {
+        const digitValue = this.baseDigitValue(char);
+        if (digitValue === null || digitValue >= base) {
+          throw new Error(`Invalid digit '${char}' for base ${base}`);
+        }
+        value = value * BigInt(base) + BigInt(digitValue);
+      }
+
+      return value.toString();
+    },
+
+    baseDigitValue(char: string): number | null {
+      if (/^[0-9]$/u.test(char)) {
+        return Number.parseInt(char, 10);
+      }
+
+      if (/^[A-Z]$/u.test(char)) {
+        return char.charCodeAt(0) - 55;
+      }
+
+      return null;
     },
 
     getInsertionTargetSelection(
@@ -1268,6 +1352,47 @@ declare global {
     return `${whole.toString()}+${formatRationalAsLatex(absRemainder.toString(), normalizedDen.toString())}`;
   };
 
+  const formatIntegerInBase = (value: string, base: number): string => {
+    const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    let integer = BigInt(value);
+    const isNegative = integer < 0n;
+    if (isNegative) {
+      integer = -integer;
+    }
+
+    if (integer === 0n) {
+      return `0_{${base}}`;
+    }
+
+    let digits = "";
+    const bigBase = BigInt(base);
+    while (integer > 0n) {
+      const digit = Number(integer % bigBase);
+      digits = alphabet[digit] + digits;
+      integer /= bigBase;
+    }
+
+    return `${isNegative ? "-" : ""}${digits}_{${base}}`;
+  };
+
+  const formatBaseConvertedResult = (
+    result: SolverResult,
+    targetBase: number
+  ): { latex: string; fallbackReason: string | null } => {
+    if (!result.isRational || !result.numerator || !result.denominator) {
+      throw new Error("Base conversion requires an exact rational solver result");
+    }
+
+    if (result.denominator !== "1") {
+      throw new Error("Base conversion currently supports integer results only");
+    }
+
+    return {
+      latex: formatIntegerInBase(result.numerator, targetBase),
+      fallbackReason: null
+    };
+  };
+
   const formatSolverResult = (result: SolverResult, format: AnswerFormatKey): { latex: string; fallbackReason: string | null } => {
     if (format === "fraction") {
       return { latex: result.latex, fallbackReason: null };
@@ -1894,12 +2019,20 @@ def mathcha_solve_latex(input_latex):
 
     const answerFormat = getAnswerFormat();
     const solverResult = await pythonRuntime.solveLatex(solverInput.normalized);
-    const formatted = formatSolverResult(solverResult, answerFormat);
+    const formatted =
+      solverInput.targetBase !== null
+        ? formatBaseConvertedResult(solverResult, solverInput.targetBase)
+        : formatSolverResult(solverResult, answerFormat);
     const insertionLatex = buildInsertedAnswerLatex(solverInput, formatted.latex);
 
-    log("Selected answer format:", answerFormatLabels[answerFormat]);
+    log(
+      "Selected answer format:",
+      solverInput.targetBase !== null ? `Base ${solverInput.targetBase}` : answerFormatLabels[answerFormat]
+    );
     mathcha.logRuntime("solveAndInsertAnswer:formatted", {
       answerFormat,
+      targetBase: solverInput.targetBase,
+      baseOverride: solverInput.targetBase !== null,
       fallbackReason: formatted.fallbackReason,
       exactLatexPreview: solverResult.latex.slice(0, 120),
       formattedPreview: formatted.latex.slice(0, 120),
