@@ -61,7 +61,7 @@ npm run pw:install
 npm run pw:analyze
 ```
 
-The userscript bundle is produced at [`dist/mathcha-toolkit.user.js`](/Z:/files/projects/js/mathcha enhancer/dist/mathcha-toolkit.user.js).
+The userscript bundle is produced at [dist/mathcha-toolkit.user.js](/dist/mathcha-toolkit.user.js).
 
 ## Notes
 
