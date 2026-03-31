@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Enhanced Mathcha.io - AI Integration
+// @name         Mathcha Toolkit
 // @namespace    http://tampermonkey.net/
-// @version      2.4
-// @description  AI integration for Mathcha.io
+// @version      3
+// @description  Calculator, LaTeX, and AI workflow tools for Mathcha.io
 // @author       Your name
 // @match        https://*.mathcha.io/*
 // @grant        GM_setClipboard

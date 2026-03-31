@@ -18,7 +18,7 @@ export {};
   "use strict";
 
   const pageWindow = unsafeWindow as PyodideWindow;
-  const logLabel = `[Mathcha Helper v${SCRIPT_VERSION}]`;
+  const logLabel = `[Mathcha Toolkit v${SCRIPT_VERSION}]`;
   const log: LogFn = (...args: unknown[]): void => console.log(logLabel, ...args);
   const logError: LogFn = (...args: unknown[]): void => console.error(logLabel, ...args);
   const notify = createNotifier();
@@ -1113,10 +1113,10 @@ export {};
       });
     void loadMathJax()
       .then(() => {
-        notify("Mathcha Helper ready - Use Ctrl+Alt for AI + LaTeX features");
+        notify("Mathcha Toolkit ready - Use Ctrl+Alt for tools");
       })
       .catch(() => {
-        notify("Mathcha Helper ready (LaTeX rendering not available)", true);
+        notify("Mathcha Toolkit ready (LaTeX rendering not available)", true);
       });
   }
 })();

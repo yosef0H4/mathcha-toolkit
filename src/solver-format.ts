@@ -167,7 +167,7 @@ export const describeSolverError = (error: unknown): string => {
   }
 
   if (/I don't understand this|I expected|syntaxError|InputMismatchException/u.test(rawMessage)) {
-    return "Mathcha Helper could not parse that expression. Check the base syntax and try again.";
+    return "Mathcha Toolkit could not parse that expression. Check the base syntax and try again.";
   }
 
   return "Failed to solve the selected expression.";

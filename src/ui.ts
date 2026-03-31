@@ -67,7 +67,7 @@ export function createTooltip(): HTMLDivElement {
   `;
 
   aiTooltip.innerHTML = `
-    <div style="margin-bottom: 8px; font-weight: bold;">AI Shortcuts (Ctrl+Alt+Key)</div>
+    <div style="margin-bottom: 8px; font-weight: bold;">Toolkit Shortcuts (Ctrl+Alt+Key)</div>
     <div style="margin: 4px 0;">
       <kbd>${config.aiShortcuts.copyLatex}</kbd> - Copy LaTeX
     </div>

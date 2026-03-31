@@ -5,7 +5,7 @@ const banner = await readFile(new URL("./userscript.header.txt", import.meta.url
 
 await build({
   entryPoints: ["src/script.ts"],
-  outfile: "dist/mathcha-enhancer.user.js",
+  outfile: "dist/mathcha-toolkit.user.js",
   bundle: true,
   format: "iife",
   target: "es2020",

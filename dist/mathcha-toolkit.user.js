@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Enhanced Mathcha.io - AI Integration
+// @name         Mathcha Toolkit
 // @namespace    http://tampermonkey.net/
-// @version      2.4
-// @description  AI integration for Mathcha.io
+// @version      3
+// @description  Calculator, LaTeX, and AI workflow tools for Mathcha.io
 // @author       Your name
 // @match        https://*.mathcha.io/*
 // @grant        GM_setClipboard
@@ -14,7 +14,7 @@
 "use strict";
 (() => {
   // src/config.ts
-  var SCRIPT_VERSION = "2.4";
+  var SCRIPT_VERSION = "3";
   var PYODIDE_VERSION = "0.29.3";
   var PYODIDE_INDEX_URL = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
   var PYODIDE_SCRIPT_URL = `${PYODIDE_INDEX_URL}pyodide.js`;
@@ -49,9 +49,25 @@
         name: "ChatGPT",
         url: "https://chatgpt.com/?q=%s"
       },
-      gemini: {
-        name: "Google Gemini",
-        url: "https://gemini.google.com/?q=%s"
+      google: {
+        name: "Google AI Studio",
+        url: "https://aistudio.google.com/app/prompts/new_chat?prompt=%s"
+      },
+      youcom: {
+        name: "You.com",
+        url: "https://you.com/search?q=%s&fromSearchBar=true&tbm=youchat"
+      },
+      perplexity: {
+        name: "Perplexity",
+        url: "https://www.perplexity.ai/search?q=%s"
+      },
+      grok: {
+        name: "Grok",
+        url: "https://grok.com/?q=%s"
+      },
+      mistral: {
+        name: "Mistral Le Chat",
+        url: "https://chat.mistral.ai/chat?q=%s"
       }
     },
     solver: {
@@ -823,7 +839,7 @@ def mathcha_solve_latex(input_latex):
       return "The selected expression is empty after cleanup.";
     }
     if (/I don't understand this|I expected|syntaxError|InputMismatchException/u.test(rawMessage)) {
-      return "Mathcha Helper could not parse that expression. Check the base syntax and try again.";
+      return "Mathcha Toolkit could not parse that expression. Check the base syntax and try again.";
     }
     return "Failed to solve the selected expression.";
   };
@@ -1007,7 +1023,7 @@ ${latex}`));
     display: none;
   `;
     aiTooltip.innerHTML = `
-    <div style="margin-bottom: 8px; font-weight: bold;">AI Shortcuts (Ctrl+Alt+Key)</div>
+    <div style="margin-bottom: 8px; font-weight: bold;">Toolkit Shortcuts (Ctrl+Alt+Key)</div>
     <div style="margin: 4px 0;">
       <kbd>${config.aiShortcuts.copyLatex}</kbd> - Copy LaTeX
     </div>
@@ -1042,7 +1058,7 @@ ${latex}`));
   (() => {
     "use strict";
     const pageWindow = unsafeWindow;
-    const logLabel = `[Mathcha Helper v${SCRIPT_VERSION}]`;
+    const logLabel = `[Mathcha Toolkit v${SCRIPT_VERSION}]`;
     const log = (...args) => console.log(logLabel, ...args);
     const logError = (...args) => console.error(logLabel, ...args);
     const notify = createNotifier();
@@ -1780,9 +1796,9 @@ ${latex}`));
         logError("Background Python warmup failed:", error);
       });
       void loadMathJax().then(() => {
-        notify("Mathcha Helper ready - Use Ctrl+Alt for AI + LaTeX features");
+        notify("Mathcha Toolkit ready - Use Ctrl+Alt for tools");
       }).catch(() => {
-        notify("Mathcha Helper ready (LaTeX rendering not available)", true);
+        notify("Mathcha Toolkit ready (LaTeX rendering not available)", true);
       });
     }
   })();
