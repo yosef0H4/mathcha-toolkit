@@ -67,4 +67,4 @@ The userscript bundle is produced at [`dist/mathcha-toolkit.user.js`](/Z:/files/
 
 - The script only activates on `https://*.mathcha.io/*`.
 - Some external AI links are best-effort and may change over time.
-- Playwright helpers and runtime investigation notes live under [playwright](/Z:/files/projects/js/mathcha enhancer/playwright) and [docs/mathcha-runtime-notes.md](/Z:/files/projects/js/mathcha enhancer/docs/mathcha-runtime-notes.md).
+- Playwright helpers and runtime investigation notes live under [playwright](/playwright) and [docs/mathcha-runtime-notes.md](/docs/mathcha-runtime-notes.md).
