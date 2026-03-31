@@ -36,9 +36,21 @@ export const config: AppConfig = {
       name: "ChatGPT",
       url: "https://chatgpt.com/?q=%s"
     },
-    gemini: {
-      name: "Google Gemini",
-      url: "https://gemini.google.com/?q=%s"
+    youcom: {
+      name: "You.com",
+      url: "https://you.com/search?q=%s&fromSearchBar=true&tbm=youchat"
+    },
+    perplexity: {
+      name: "Perplexity",
+      url: "https://www.perplexity.ai/search?q=%s"
+    },
+    grok: {
+      name: "Grok",
+      url: "https://grok.com/?q=%s"
+    },
+    mistral: {
+      name: "Mistral Le Chat",
+      url: "https://chat.mistral.ai/chat?q=%s"
     }
   },
   solver: {

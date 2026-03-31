@@ -1,6 +1,6 @@
 import type { PyodideInterface } from "pyodide";
 
-export type AiServiceKey = "claude" | "chatgpt" | "gemini";
+export type AiServiceKey = "claude" | "chatgpt" | "youcom" | "perplexity" | "grok" | "mistral";
 export type CommandKey = "copyLatex" | "analyze" | "symbolab" | "answer" | "pasteFromLatex";
 export type AnswerFormatKey = "fraction" | "decimal" | "mixed";
 
