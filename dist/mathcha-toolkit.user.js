@@ -1222,13 +1222,35 @@ ${latex}`));
       },
       hasEquationTail(latex) {
         const normalized = this.normalizeImportLatex(latex.trim()).replace(/^\\displaystyle\s*/, "").trim();
-        return normalized.includes("=");
+        return this.findTopLevelEqualsIndex(normalized) >= 0;
+      },
+      findTopLevelEqualsIndex(latex) {
+        let braceDepth = 0;
+        for (let index = 0; index < latex.length; index += 1) {
+          const char = latex[index];
+          if (char === "\\") {
+            index += 1;
+            continue;
+          }
+          if (char === "{") {
+            braceDepth += 1;
+            continue;
+          }
+          if (char === "}") {
+            braceDepth = Math.max(0, braceDepth - 1);
+            continue;
+          }
+          if (char === "=" && braceDepth === 0) {
+            return index;
+          }
+        }
+        return -1;
       },
       normalizeLatexForSolver(latex) {
         let normalized = latex.trim();
         normalized = this.normalizeImportLatex(normalized);
         normalized = normalized.replace(/^\\displaystyle\s*/, "").trim();
-        const equationIndex = normalized.indexOf("=");
+        const equationIndex = this.findTopLevelEqualsIndex(normalized);
         if (equationIndex >= 0) {
           normalized = normalized.slice(0, equationIndex).trim();
         }
