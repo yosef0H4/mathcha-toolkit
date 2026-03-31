@@ -17,6 +17,7 @@ Current status:
 - General arbitrary-selection mapping: not solved yet
 - Runtime import trigger via `latexIoHandler.showImportFromLatex()`: solved
 - Runtime import through direct dialog parser call + `onSuccessfulParse(...)`: solved
+- Runtime answer append after selected math by collapsing to selection end first: solved
 
 ## Current Userscript Path
 
@@ -282,6 +283,29 @@ Important observations:
   5. call `latexIoHandler.onSuccessfulParse(payload)`
 
 This uses Mathcha's own parser and insertion logic without waiting on the textarea debounce or clicking the dialog controls.
+
+## Solve And Append `=answer`
+
+Naively calling the import callback on an active selection replaces the selected math.
+
+Useful runtime behavior:
+
+- with a live range selected, `onSuccessfulParse(...)` consumes the selection
+- collapsing the selection first with `setSelected(endSelection)` prevents replacement
+- after collapsing, direct math import of `=53` appended to the selected `F` and produced `F=53`
+
+Working runtime pattern:
+
+1. capture the selected latex through `latexIoHandler.getSelectedLatex(...)`
+2. retain the current `extendedCursorSelected` as the insertion target
+3. collapse the selection with `setSelected(endSelection)`
+4. parse `=${answer}` through the direct runtime import path
+5. call `latexIoHandler.onSuccessfulParse(payload)`
+
+Playwright proof:
+
+- [playwright/answer-insert.spec.js](/Z:/files/projects/js/mathcha enhancer/playwright/answer-insert.spec.js)
+- `npm run pw:runtime:answer`
 
 Playwright proof:
 
