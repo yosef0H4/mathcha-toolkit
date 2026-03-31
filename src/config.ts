@@ -36,6 +36,10 @@ export const config: AppConfig = {
       name: "ChatGPT",
       url: "https://chatgpt.com/?q=%s"
     },
+    google: {
+      name: "Google AI Studio",
+      url: "https://aistudio.google.com/app/prompts/new_chat?prompt=%s"
+    },
     youcom: {
       name: "You.com",
       url: "https://you.com/search?q=%s&fromSearchBar=true&tbm=youchat"
