@@ -13,6 +13,11 @@ import {
 async function runAnswerInsertScenario(page, context, insertionLatex) {
   const probeState = createProbeState();
   const activeDocumentCapture = createActiveDocumentCapture();
+  const pageErrors = [];
+
+  page.on("pageerror", (error) => {
+    pageErrors.push(String(error));
+  });
 
   await installRuntimeProbe(page);
   const networkCapture = await wireNetworkCapture(page, probeState, activeDocumentCapture);
@@ -27,12 +32,17 @@ async function runAnswerInsertScenario(page, context, insertionLatex) {
     probeState,
     activeDocumentCapture,
     result,
-    runtimeProbe
+    runtimeProbe,
+    pageErrors
   };
 }
 
 test("appends exact fraction answers after the selected math instead of replacing it", async ({ page, context }) => {
-  const { probeState, activeDocumentCapture, result, runtimeProbe } = await runAnswerInsertScenario(page, context, "=\\frac{3}{2}");
+  const { probeState, activeDocumentCapture, result, runtimeProbe, pageErrors } = await runAnswerInsertScenario(
+    page,
+    context,
+    "=\\frac{3}{2}"
+  );
 
   const report = {
     reportTitle: "Mathcha Runtime Answer Insert Summary",
@@ -68,20 +78,22 @@ test("appends exact fraction answers after the selected math instead of replacin
   expect(result.selectedBefore).toBe("F");
   expect(result.targetLineHasEquals).toBeTruthy();
   expect(result.afterModelJson).toContain("\\frac");
+  expect(pageErrors).toEqual([]);
 });
 
 test("appends decimal answers as literal decimal math content", async ({ page, context }) => {
-  const { result } = await runAnswerInsertScenario(page, context, "=1.5");
+  const { result, pageErrors } = await runAnswerInsertScenario(page, context, "=1.5");
 
   expect(result.ok).toBeTruthy();
   expect(result.changed).toBeTruthy();
   expect(result.dialogStillOpen).toBeFalsy();
   expect(result.targetLineHasEquals).toBeTruthy();
   expect(result.combinedTargetLineText).toContain("1.5");
+  expect(pageErrors).toEqual([]);
 });
 
 test("appends mixed-number answers as parser-safe sum math", async ({ page, context }) => {
-  const { result } = await runAnswerInsertScenario(page, context, "=1+\\frac{1}{2}");
+  const { result, pageErrors } = await runAnswerInsertScenario(page, context, "=1+\\frac{1}{2}");
 
   expect(result.ok).toBeTruthy();
   expect(result.changed).toBeTruthy();
@@ -89,4 +101,5 @@ test("appends mixed-number answers as parser-safe sum math", async ({ page, cont
   expect(result.targetLineHasEquals).toBeTruthy();
   expect(result.combinedTargetLineText).toContain("1");
   expect(result.afterModelJson).toContain("\\frac");
+  expect(pageErrors).toEqual([]);
 });

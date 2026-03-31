@@ -1,5 +1,6 @@
 import type { AiServiceKey, LogFn, NotifyFn } from "./types";
 import { config } from "./config";
+import { getPlatform } from "./platform";
 
 export function createServices({ notify }: { notify: NotifyFn; log: LogFn }) {
   return {
@@ -63,7 +64,7 @@ export function createServices({ notify }: { notify: NotifyFn; log: LogFn }) {
         borderRadius: "4px",
         border: "1px solid #ccc"
       });
-      textarea.value = GM_getValue("lastPrompt", "Enter your prompt here.");
+      textarea.value = getPlatform().getValue("lastPrompt", "Enter your prompt here.");
 
       const buttons = document.createElement("div");
       buttons.style.textAlign = "right";
@@ -98,11 +99,11 @@ export function createServices({ notify }: { notify: NotifyFn; log: LogFn }) {
       submit.onclick = () => {
         const selectedService = config.aiServices[serviceSelector.value as AiServiceKey];
         const prompt = textarea.value.trim();
-        GM_setValue("lastPrompt", prompt);
-        GM_setValue("lastAiService", serviceSelector.value);
+        getPlatform().setValue("lastPrompt", prompt);
+        getPlatform().setValue("lastAiService", serviceSelector.value);
 
         const url = selectedService.url.replace("%s", encodeURIComponent(`${prompt}\n\n${latex}`));
-        GM_openInTab(url, { active: true });
+        getPlatform().openTab(url, { active: true });
         cleanup();
       };
 
@@ -127,7 +128,7 @@ export function createServices({ notify }: { notify: NotifyFn; log: LogFn }) {
 
     symbolab(latex: string): void {
       const cleaned = latex.replace(/\$/g, "").trim();
-      GM_openInTab(`https://www.symbolab.com/solver/step-by-step/${encodeURIComponent(cleaned)}`, {
+      getPlatform().openTab(`https://www.symbolab.com/solver/step-by-step/${encodeURIComponent(cleaned)}`, {
         active: true
       });
     }

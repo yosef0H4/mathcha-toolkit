@@ -11,13 +11,14 @@ import {
 import { createServices } from "./services";
 import type { AiServiceKey, CommandKey, LogFn, MathchaRuntime, PyodideWindow, SolverInput } from "./types";
 import { createTooltip, createNotifier, loadMathJax, updateAnswerFormatUi } from "./ui";
+import { getPlatform } from "./platform";
 
 export {};
 
-(() => {
+export function bootstrapMathchaToolkit(): void {
   "use strict";
 
-  const pageWindow = unsafeWindow as PyodideWindow;
+  const pageWindow = getPlatform().pageWindow as PyodideWindow;
   const logLabel = `[Mathcha Toolkit v${SCRIPT_VERSION}]`;
   const log: LogFn = (...args: unknown[]): void => console.log(logLabel, ...args);
   const logError: LogFn = (...args: unknown[]): void => console.error(logLabel, ...args);
@@ -240,6 +241,113 @@ export {};
         forMathMode: element.props?.forMathMode ?? null
       });
       return element;
+    },
+
+    findImportDialogComponentInstance():
+      | {
+          textArea?: { select?: () => void; focus?: () => void } | null;
+          onOkClick?: () => void;
+        }
+      | null {
+      const roots = Array.from(document.querySelectorAll("*")).slice(0, 600) as Array<
+        Element & Record<string, unknown>
+      >;
+
+      const walkNode = (
+        node: unknown,
+        visited: WeakSet<object>,
+        depth = 0
+      ):
+        | {
+            textArea?: { select?: () => void; focus?: () => void } | null;
+            onOkClick?: () => void;
+          }
+        | null => {
+        if (!node || typeof node !== "object" || visited.has(node) || depth > 10) {
+          return null;
+        }
+
+        visited.add(node);
+        const maybeInstance = (
+          node as {
+            _instance?: {
+              textArea?: { select?: () => void; focus?: () => void } | null;
+              onOkClick?: () => void;
+            };
+            _renderedComponent?: unknown;
+            _renderedChildren?: Record<string, unknown>;
+          }
+        )._instance;
+
+        if (maybeInstance && "textArea" in maybeInstance && typeof maybeInstance.onOkClick === "function") {
+          return maybeInstance;
+        }
+
+        const renderedComponent = (node as { _renderedComponent?: unknown })._renderedComponent;
+        const componentHit = walkNode(renderedComponent, visited, depth + 1);
+        if (componentHit) {
+          return componentHit;
+        }
+
+        const renderedChildren = (node as { _renderedChildren?: Record<string, unknown> })._renderedChildren;
+        if (renderedChildren && typeof renderedChildren === "object") {
+          for (const child of Object.values(renderedChildren)) {
+            const childHit = walkNode(child, visited, depth + 1);
+            if (childHit) {
+              return childHit;
+            }
+          }
+        }
+
+        return null;
+      };
+
+      for (const root of roots) {
+        for (const key of Object.getOwnPropertyNames(root)) {
+          if (!key.startsWith("__reactInternalInstance")) continue;
+          const match = walkNode(root[key], new WeakSet<object>());
+          if (match) {
+            return match;
+          }
+        }
+      }
+
+      return null;
+    },
+
+    stabilizeImportDialogTextArea(): void {
+      const instance = this.findImportDialogComponentInstance();
+      if (!instance) {
+        this.logRuntime("stabilizeImportDialogTextArea:missing-instance");
+        return;
+      }
+
+      const currentDescriptor = Object.getOwnPropertyDescriptor(instance, "textArea");
+      if (currentDescriptor?.get) {
+        this.logRuntime("stabilizeImportDialogTextArea:already-patched");
+        return;
+      }
+
+      const fallbackTextArea = {
+        select(): void {},
+        focus(): void {}
+      };
+
+      let currentTextArea = instance.textArea ?? fallbackTextArea;
+      Object.defineProperty(instance, "textArea", {
+        configurable: true,
+        enumerable: true,
+        get(): { select?: () => void; focus?: () => void } {
+          return currentTextArea ?? fallbackTextArea;
+        },
+        set(nextValue: { select?: () => void; focus?: () => void } | null | undefined): void {
+          currentTextArea = nextValue ?? fallbackTextArea;
+        }
+      });
+
+      this.logRuntime("stabilizeImportDialogTextArea:patched", {
+        hadTextArea: Boolean(instance.textArea)
+      });
     },
 
     parseLatexWithRuntime(
@@ -562,6 +670,7 @@ export {};
 
       const beforeModel = this.getEditorModelFingerprint(editor as Record<string, unknown> | null);
       latexIoHandler.showImportFromLatex();
+      this.stabilizeImportDialogTextArea();
       const dialogElement = this.getImportDialogElement(latexIoHandler);
       if (!dialogElement) {
         throw new Error("Mathcha import runtime dialog element is unavailable");
@@ -618,6 +727,7 @@ export {};
       const beforeModel = this.getEditorModelFingerprint(editor as Record<string, unknown> | null);
       try {
         latexIoHandler.showImportFromLatex();
+        this.stabilizeImportDialogTextArea();
         const dialogElement = this.getImportDialogElement(latexIoHandler);
         if (!dialogElement) {
           throw new Error("Import runtime dialog element is unavailable");
@@ -642,6 +752,7 @@ export {};
         });
 
         latexIoHandler.showImportFromLatex();
+        this.stabilizeImportDialogTextArea();
         await new Promise<void>((resolve) => setTimeout(resolve, config.delay.standard));
 
         const dialog = this.getImportDialog();
@@ -1048,7 +1159,7 @@ export {};
     analyze: async () => {
       try {
         const latex = await mathcha.copyToClipboard();
-        const lastAiService = (GM_getValue("lastAiService", "claude") as AiServiceKey) ?? "claude";
+        const lastAiService = (getPlatform().getValue("lastAiService", "claude") as AiServiceKey) ?? "claude";
         services.openAiService(latex, lastAiService);
       } catch {
         return;
@@ -1085,6 +1196,12 @@ export {};
         notify(`Import error: ${message}`, true);
       }
     }
+  };
+
+  window.__MATHCHA_TOOLKIT__ = {
+    version: SCRIPT_VERSION,
+    platform: getPlatform().kind,
+    commands
   };
 
   let isCtrlAltPressed = false;
@@ -1148,4 +1265,4 @@ export {};
         notify("Mathcha Toolkit ready (LaTeX rendering not available)", true);
       });
   }
-})();
+}

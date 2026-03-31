@@ -54,6 +54,15 @@ export type SolverResult = {
 export type PyodideWindow = Window & typeof globalThis & { loadPyodide?: LoadPyodide };
 export type LogFn = (...args: unknown[]) => void;
 export type NotifyFn = (message: string, isError?: boolean) => void;
+export type OpenTabOptions = { active?: boolean };
+
+export type ToolkitPlatform = {
+  kind: "userscript" | "extension" | "console";
+  pageWindow: PyodideWindow;
+  getValue: <T>(key: string, fallback: T) => T;
+  setValue: (key: string, value: unknown) => void;
+  openTab: (url: string, options?: OpenTabOptions) => void;
+};
 
 export type PythonRuntime = {
   helloWorld(): Promise<string>;
@@ -75,6 +84,15 @@ declare global {
   interface Window {
     MathJax?: MathJaxConfig;
     mathGlobal?: Record<string, unknown>;
+    __MATHCHA_TOOLKIT_EXTENSION_INIT__?: {
+      state?: Record<string, unknown>;
+      channel?: string;
+    };
+    __MATHCHA_TOOLKIT__?: {
+      version: string;
+      platform: string;
+      commands: Record<CommandKey, () => Promise<void>>;
+    };
   }
 }
 

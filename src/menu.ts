@@ -1,5 +1,6 @@
 import { answerFormatLabels, config, cycleAnswerFormat, getAnswerFormat } from "./config";
 import type { AiServiceKey, LogFn, MathchaRuntime, NotifyFn, SolveAndInsertAnswer } from "./types";
+import { getPlatform } from "./platform";
 
 export function createMenuIntegration({
   aiTooltip,
@@ -109,7 +110,7 @@ export function createMenuIntegration({
       const separator = document.createElement("ct-separator");
       menus.appendChild(separator);
 
-      const lastAiService = (GM_getValue("lastAiService", "claude") as AiServiceKey) ?? "claude";
+      const lastAiService = (getPlatform().getValue("lastAiService", "claude") as AiServiceKey) ?? "claude";
       const items: Array<{ text: string; shortcut: string; handler: () => Promise<void> }> = [
         {
           text: `Answer Format: ${answerFormatLabels[getAnswerFormat()]}`,

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mathcha Toolkit
 // @namespace    http://tampermonkey.net/
-// @version      3.1
+// @version      3.2
 // @description  Calculator, LaTeX, and AI workflow tools for Mathcha.io
 // @author       Your name
 // @match        https://*.mathcha.io/*
@@ -13,8 +13,31 @@
 // ==/UserScript==
 "use strict";
 (() => {
+  // src/platform.ts
+  var currentPlatform = null;
+  var setPlatform = (platform) => {
+    currentPlatform = platform;
+  };
+  var getPlatform = () => {
+    if (!currentPlatform) {
+      throw new Error("Mathcha Toolkit platform has not been initialized");
+    }
+    return currentPlatform;
+  };
+  var createUserscriptPlatform = () => ({
+    kind: "userscript",
+    pageWindow: unsafeWindow,
+    getValue: (key, fallback) => GM_getValue(key, fallback),
+    setValue: (key, value) => {
+      GM_setValue(key, value);
+    },
+    openTab: (url, options) => {
+      GM_openInTab(url, { active: options?.active ?? true });
+    }
+  });
+
   // src/config.ts
-  var SCRIPT_VERSION = "3.1";
+  var SCRIPT_VERSION = "3.2";
   var PYODIDE_VERSION = "0.29.3";
   var PYODIDE_INDEX_URL = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
   var PYODIDE_SCRIPT_URL = `${PYODIDE_INDEX_URL}pyodide.js`;
@@ -82,11 +105,11 @@
     mixed: "Mixed Number"
   };
   var getAnswerFormat = () => {
-    const stored = GM_getValue(ANSWER_FORMAT_STORAGE_KEY, config.solver.defaultAnswerFormat);
+    const stored = getPlatform().getValue(ANSWER_FORMAT_STORAGE_KEY, config.solver.defaultAnswerFormat);
     return stored === "fraction" || stored === "decimal" || stored === "mixed" ? stored : config.solver.defaultAnswerFormat;
   };
   var setAnswerFormat = (format) => {
-    GM_setValue(ANSWER_FORMAT_STORAGE_KEY, format);
+    getPlatform().setValue(ANSWER_FORMAT_STORAGE_KEY, format);
   };
   var cycleAnswerFormat = () => {
     const formats = ["fraction", "decimal", "mixed"];
@@ -176,7 +199,7 @@
         if (!menus) return;
         const separator = document.createElement("ct-separator");
         menus.appendChild(separator);
-        const lastAiService = GM_getValue("lastAiService", "claude") ?? "claude";
+        const lastAiService = getPlatform().getValue("lastAiService", "claude") ?? "claude";
         const items = [
           {
             text: `Answer Format: ${answerFormatLabels[getAnswerFormat()]}`,
@@ -923,7 +946,7 @@ def mathcha_solve_latex(input_latex):
           borderRadius: "4px",
           border: "1px solid #ccc"
         });
-        textarea.value = GM_getValue("lastPrompt", "Enter your prompt here.");
+        textarea.value = getPlatform().getValue("lastPrompt", "Enter your prompt here.");
         const buttons = document.createElement("div");
         buttons.style.textAlign = "right";
         const submit = document.createElement("button");
@@ -953,12 +976,12 @@ def mathcha_solve_latex(input_latex):
         submit.onclick = () => {
           const selectedService = config.aiServices[serviceSelector.value];
           const prompt = textarea.value.trim();
-          GM_setValue("lastPrompt", prompt);
-          GM_setValue("lastAiService", serviceSelector.value);
+          getPlatform().setValue("lastPrompt", prompt);
+          getPlatform().setValue("lastAiService", serviceSelector.value);
           const url = selectedService.url.replace("%s", encodeURIComponent(`${prompt}
 
 ${latex}`));
-          GM_openInTab(url, { active: true });
+          getPlatform().openTab(url, { active: true });
           cleanup();
         };
         cancel.onclick = cleanup;
@@ -979,7 +1002,7 @@ ${latex}`));
       },
       symbolab(latex) {
         const cleaned = latex.replace(/\$/g, "").trim();
-        GM_openInTab(`https://www.symbolab.com/solver/step-by-step/${encodeURIComponent(cleaned)}`, {
+        getPlatform().openTab(`https://www.symbolab.com/solver/step-by-step/${encodeURIComponent(cleaned)}`, {
           active: true
         });
       }
@@ -1044,28 +1067,36 @@ ${latex}`));
     font-size: 14px;
     display: none;
   `;
-    aiTooltip.innerHTML = `
-    <div style="margin-bottom: 8px; font-weight: bold;">Toolkit Shortcuts (Ctrl+Alt+Key)</div>
-    <div style="margin: 4px 0;">
-      <kbd>${config.aiShortcuts.copyLatex}</kbd> - Copy LaTeX
-    </div>
-    <div style="margin: 4px 0;">
-      <kbd>${config.aiShortcuts.analyze}</kbd> - Analyze with AI
-    </div>
-    <div style="margin: 4px 0;">
-      <kbd>${config.aiShortcuts.symbolab}</kbd> - Open in Symbolab
-    </div>
-    <div style="margin: 4px 0;">
-      <kbd>${config.aiShortcuts.answer}</kbd> - Solve with Python
-    </div>
-    <div style="margin: 4px 0;">
-      <kbd>${config.aiShortcuts.pasteFromLatex}</kbd> - Paste From LaTeX
-    </div>
-    <div style="margin: 8px 0 0; padding-top: 8px; border-top: 1px solid #eee;">
-      Answer format:
-      <strong data-answer-format-label>${answerFormatLabels[getAnswerFormat()]}</strong>
-    </div>
-  `;
+    const title = document.createElement("div");
+    title.textContent = "Toolkit Shortcuts (Ctrl+Alt+Key)";
+    title.style.marginBottom = "8px";
+    title.style.fontWeight = "bold";
+    const createShortcutRow = (shortcut, description) => {
+      const row = document.createElement("div");
+      row.style.margin = "4px 0";
+      const key = document.createElement("kbd");
+      key.textContent = shortcut;
+      row.append(key, document.createTextNode(` - ${description}`));
+      return row;
+    };
+    const answerFormatContainer = document.createElement("div");
+    answerFormatContainer.style.margin = "8px 0 0";
+    answerFormatContainer.style.paddingTop = "8px";
+    answerFormatContainer.style.borderTop = "1px solid #eee";
+    answerFormatContainer.append(document.createTextNode("Answer format: "));
+    const formatLabel = document.createElement("strong");
+    formatLabel.dataset.answerFormatLabel = "";
+    formatLabel.textContent = answerFormatLabels[getAnswerFormat()];
+    answerFormatContainer.appendChild(formatLabel);
+    aiTooltip.append(
+      title,
+      createShortcutRow(config.aiShortcuts.copyLatex, "Copy LaTeX"),
+      createShortcutRow(config.aiShortcuts.analyze, "Analyze with AI"),
+      createShortcutRow(config.aiShortcuts.symbolab, "Open in Symbolab"),
+      createShortcutRow(config.aiShortcuts.answer, "Solve with Python"),
+      createShortcutRow(config.aiShortcuts.pasteFromLatex, "Paste From LaTeX"),
+      answerFormatContainer
+    );
     document.body.appendChild(aiTooltip);
     return aiTooltip;
   }
@@ -1077,9 +1108,9 @@ ${latex}`));
   }
 
   // src/script.ts
-  (() => {
+  function bootstrapMathchaToolkit() {
     "use strict";
-    const pageWindow = unsafeWindow;
+    const pageWindow = getPlatform().pageWindow;
     const logLabel = `[Mathcha Toolkit v${SCRIPT_VERSION}]`;
     const log = (...args) => console.log(logLabel, ...args);
     const logError = (...args) => console.error(logLabel, ...args);
@@ -1161,6 +1192,76 @@ ${latex}`));
           forMathMode: element.props?.forMathMode ?? null
         });
         return element;
+      },
+      findImportDialogComponentInstance() {
+        const roots = Array.from(document.querySelectorAll("*")).slice(0, 600);
+        const walkNode = (node, visited, depth = 0) => {
+          if (!node || typeof node !== "object" || visited.has(node) || depth > 10) {
+            return null;
+          }
+          visited.add(node);
+          const maybeInstance = node._instance;
+          if (maybeInstance && "textArea" in maybeInstance && typeof maybeInstance.onOkClick === "function") {
+            return maybeInstance;
+          }
+          const renderedComponent = node._renderedComponent;
+          const componentHit = walkNode(renderedComponent, visited, depth + 1);
+          if (componentHit) {
+            return componentHit;
+          }
+          const renderedChildren = node._renderedChildren;
+          if (renderedChildren && typeof renderedChildren === "object") {
+            for (const child of Object.values(renderedChildren)) {
+              const childHit = walkNode(child, visited, depth + 1);
+              if (childHit) {
+                return childHit;
+              }
+            }
+          }
+          return null;
+        };
+        for (const root of roots) {
+          for (const key of Object.getOwnPropertyNames(root)) {
+            if (!key.startsWith("__reactInternalInstance")) continue;
+            const match = walkNode(root[key], /* @__PURE__ */ new WeakSet());
+            if (match) {
+              return match;
+            }
+          }
+        }
+        return null;
+      },
+      stabilizeImportDialogTextArea() {
+        const instance = this.findImportDialogComponentInstance();
+        if (!instance) {
+          this.logRuntime("stabilizeImportDialogTextArea:missing-instance");
+          return;
+        }
+        const currentDescriptor = Object.getOwnPropertyDescriptor(instance, "textArea");
+        if (currentDescriptor?.get) {
+          this.logRuntime("stabilizeImportDialogTextArea:already-patched");
+          return;
+        }
+        const fallbackTextArea = {
+          select() {
+          },
+          focus() {
+          }
+        };
+        let currentTextArea = instance.textArea ?? fallbackTextArea;
+        Object.defineProperty(instance, "textArea", {
+          configurable: true,
+          enumerable: true,
+          get() {
+            return currentTextArea ?? fallbackTextArea;
+          },
+          set(nextValue) {
+            currentTextArea = nextValue ?? fallbackTextArea;
+          }
+        });
+        this.logRuntime("stabilizeImportDialogTextArea:patched", {
+          hadTextArea: Boolean(instance.textArea)
+        });
       },
       parseLatexWithRuntime(dialogElement, latex, options) {
         const dialogType = dialogElement?.type;
@@ -1379,6 +1480,7 @@ ${latex}`));
         await new Promise((resolve) => setTimeout(resolve, 30));
         const beforeModel = this.getEditorModelFingerprint(editor);
         latexIoHandler.showImportFromLatex();
+        this.stabilizeImportDialogTextArea();
         const dialogElement = this.getImportDialogElement(latexIoHandler);
         if (!dialogElement) {
           throw new Error("Mathcha import runtime dialog element is unavailable");
@@ -1426,6 +1528,7 @@ ${latex}`));
         const beforeModel = this.getEditorModelFingerprint(editor);
         try {
           latexIoHandler.showImportFromLatex();
+          this.stabilizeImportDialogTextArea();
           const dialogElement = this.getImportDialogElement(latexIoHandler);
           if (!dialogElement) {
             throw new Error("Import runtime dialog element is unavailable");
@@ -1446,6 +1549,7 @@ ${latex}`));
             error: directError instanceof Error ? directError.message : String(directError)
           });
           latexIoHandler.showImportFromLatex();
+          this.stabilizeImportDialogTextArea();
           await new Promise((resolve) => setTimeout(resolve, config.delay.standard));
           const dialog = this.getImportDialog();
           if (!dialog) {
@@ -1759,7 +1863,7 @@ ${latex}`));
       analyze: async () => {
         try {
           const latex = await mathcha.copyToClipboard();
-          const lastAiService = GM_getValue("lastAiService", "claude") ?? "claude";
+          const lastAiService = getPlatform().getValue("lastAiService", "claude") ?? "claude";
           services.openAiService(latex, lastAiService);
         } catch {
           return;
@@ -1793,6 +1897,11 @@ ${latex}`));
           notify(`Import error: ${message}`, true);
         }
       }
+    };
+    window.__MATHCHA_TOOLKIT__ = {
+      version: SCRIPT_VERSION,
+      platform: getPlatform().kind,
+      commands
     };
     let isCtrlAltPressed = false;
     document.addEventListener("keydown", (event) => {
@@ -1845,5 +1954,9 @@ ${latex}`));
         notify("Mathcha Toolkit ready (LaTeX rendering not available)", true);
       });
     }
-  })();
+  }
+
+  // src/userscript.ts
+  setPlatform(createUserscriptPlatform());
+  bootstrapMathchaToolkit();
 })();

@@ -655,6 +655,65 @@ export async function importLatexThroughDirectRuntime(page, latex, options = {})
   const { waitAfterInsertMs = 400, forceMathMode = true } = options;
   return page.evaluate(
     async ({ inputLatex, insertDelay, importForceMathMode }) => {
+      const stabilizeImportDialogTextArea = () => {
+        const walkNode = (node, visited, depth = 0) => {
+          if (!node || typeof node !== "object" || visited.has(node) || depth > 10) {
+            return null;
+          }
+
+          visited.add(node);
+          const instance = node._instance;
+          if (instance && typeof instance === "object" && "textArea" in instance && typeof instance.onOkClick === "function") {
+            return instance;
+          }
+
+          const renderedComponentHit = walkNode(node._renderedComponent, visited, depth + 1);
+          if (renderedComponentHit) return renderedComponentHit;
+
+          if (node._renderedChildren && typeof node._renderedChildren === "object") {
+            for (const child of Object.values(node._renderedChildren)) {
+              const childHit = walkNode(child, visited, depth + 1);
+              if (childHit) return childHit;
+            }
+          }
+
+          return null;
+        };
+
+        for (const root of Array.from(document.querySelectorAll("*")).slice(0, 600)) {
+          for (const key of Object.getOwnPropertyNames(root)) {
+            if (!key.startsWith("__reactInternalInstance")) continue;
+            const instance = walkNode(root[key], new WeakSet());
+            if (!instance) continue;
+
+            const currentDescriptor = Object.getOwnPropertyDescriptor(instance, "textArea");
+            if (currentDescriptor?.get) {
+              return true;
+            }
+
+            const fallbackTextArea = {
+              select() {},
+              focus() {}
+            };
+
+            let currentTextArea = instance.textArea ?? fallbackTextArea;
+            Object.defineProperty(instance, "textArea", {
+              configurable: true,
+              enumerable: true,
+              get() {
+                return currentTextArea ?? fallbackTextArea;
+              },
+              set(nextValue) {
+                currentTextArea = nextValue ?? fallbackTextArea;
+              }
+            });
+            return true;
+          }
+        }
+
+        return false;
+      };
+
       const editor = document.querySelector("math-type")?.reactInstance;
       const handler = editor?.latexIoHandler;
       if (!editor || !handler?.showImportFromLatex || !handler?.renderImportLatexBox || !handler?.onSuccessfulParse) {
@@ -667,6 +726,7 @@ export async function importLatexThroughDirectRuntime(page, latex, options = {})
       editor.setCursorInputFocus?.(true);
       editor.setCursorMathTypeFocus?.(true);
       handler.showImportFromLatex();
+      stabilizeImportDialogTextArea();
 
       const element = handler.renderImportLatexBox();
       const DialogType = element?.type;
@@ -766,6 +826,65 @@ export async function appendMathAtSelectionEnd(page, insertionLatex, options = {
 
   return page.evaluate(
     async ({ inputLatex, startSelection, endSelection, selectionDelay, insertDelay }) => {
+      const stabilizeImportDialogTextArea = () => {
+        const walkNode = (node, visited, depth = 0) => {
+          if (!node || typeof node !== "object" || visited.has(node) || depth > 10) {
+            return null;
+          }
+
+          visited.add(node);
+          const instance = node._instance;
+          if (instance && typeof instance === "object" && "textArea" in instance && typeof instance.onOkClick === "function") {
+            return instance;
+          }
+
+          const renderedComponentHit = walkNode(node._renderedComponent, visited, depth + 1);
+          if (renderedComponentHit) return renderedComponentHit;
+
+          if (node._renderedChildren && typeof node._renderedChildren === "object") {
+            for (const child of Object.values(node._renderedChildren)) {
+              const childHit = walkNode(child, visited, depth + 1);
+              if (childHit) return childHit;
+            }
+          }
+
+          return null;
+        };
+
+        for (const root of Array.from(document.querySelectorAll("*")).slice(0, 600)) {
+          for (const key of Object.getOwnPropertyNames(root)) {
+            if (!key.startsWith("__reactInternalInstance")) continue;
+            const instance = walkNode(root[key], new WeakSet());
+            if (!instance) continue;
+
+            const currentDescriptor = Object.getOwnPropertyDescriptor(instance, "textArea");
+            if (currentDescriptor?.get) {
+              return true;
+            }
+
+            const fallbackTextArea = {
+              select() {},
+              focus() {}
+            };
+
+            let currentTextArea = instance.textArea ?? fallbackTextArea;
+            Object.defineProperty(instance, "textArea", {
+              configurable: true,
+              enumerable: true,
+              get() {
+                return currentTextArea ?? fallbackTextArea;
+              },
+              set(nextValue) {
+                currentTextArea = nextValue ?? fallbackTextArea;
+              }
+            });
+            return true;
+          }
+        }
+
+        return false;
+      };
+
       const editor = document.querySelector("math-type")?.reactInstance;
       const handler = editor?.latexIoHandler;
       if (!editor || !handler?.showImportFromLatex || !handler?.renderImportLatexBox || !handler?.onSuccessfulParse) {
@@ -787,6 +906,7 @@ export async function appendMathAtSelectionEnd(page, insertionLatex, options = {
       await new Promise((resolve) => setTimeout(resolve, selectionDelay));
 
       handler.showImportFromLatex();
+      stabilizeImportDialogTextArea();
       const element = handler.renderImportLatexBox();
       const DialogType = element?.type;
       const parseLatex = DialogType?.prototype?.parseLatex;

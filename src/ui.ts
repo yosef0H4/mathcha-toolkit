@@ -66,28 +66,41 @@ export function createTooltip(): HTMLDivElement {
     display: none;
   `;
 
-  aiTooltip.innerHTML = `
-    <div style="margin-bottom: 8px; font-weight: bold;">Toolkit Shortcuts (Ctrl+Alt+Key)</div>
-    <div style="margin: 4px 0;">
-      <kbd>${config.aiShortcuts.copyLatex}</kbd> - Copy LaTeX
-    </div>
-    <div style="margin: 4px 0;">
-      <kbd>${config.aiShortcuts.analyze}</kbd> - Analyze with AI
-    </div>
-    <div style="margin: 4px 0;">
-      <kbd>${config.aiShortcuts.symbolab}</kbd> - Open in Symbolab
-    </div>
-    <div style="margin: 4px 0;">
-      <kbd>${config.aiShortcuts.answer}</kbd> - Solve with Python
-    </div>
-    <div style="margin: 4px 0;">
-      <kbd>${config.aiShortcuts.pasteFromLatex}</kbd> - Paste From LaTeX
-    </div>
-    <div style="margin: 8px 0 0; padding-top: 8px; border-top: 1px solid #eee;">
-      Answer format:
-      <strong data-answer-format-label>${answerFormatLabels[getAnswerFormat()]}</strong>
-    </div>
-  `;
+  const title = document.createElement("div");
+  title.textContent = "Toolkit Shortcuts (Ctrl+Alt+Key)";
+  title.style.marginBottom = "8px";
+  title.style.fontWeight = "bold";
+
+  const createShortcutRow = (shortcut: string, description: string): HTMLDivElement => {
+    const row = document.createElement("div");
+    row.style.margin = "4px 0";
+
+    const key = document.createElement("kbd");
+    key.textContent = shortcut;
+    row.append(key, document.createTextNode(` - ${description}`));
+    return row;
+  };
+
+  const answerFormatContainer = document.createElement("div");
+  answerFormatContainer.style.margin = "8px 0 0";
+  answerFormatContainer.style.paddingTop = "8px";
+  answerFormatContainer.style.borderTop = "1px solid #eee";
+  answerFormatContainer.append(document.createTextNode("Answer format: "));
+
+  const formatLabel = document.createElement("strong");
+  formatLabel.dataset.answerFormatLabel = "";
+  formatLabel.textContent = answerFormatLabels[getAnswerFormat()];
+  answerFormatContainer.appendChild(formatLabel);
+
+  aiTooltip.append(
+    title,
+    createShortcutRow(config.aiShortcuts.copyLatex, "Copy LaTeX"),
+    createShortcutRow(config.aiShortcuts.analyze, "Analyze with AI"),
+    createShortcutRow(config.aiShortcuts.symbolab, "Open in Symbolab"),
+    createShortcutRow(config.aiShortcuts.answer, "Solve with Python"),
+    createShortcutRow(config.aiShortcuts.pasteFromLatex, "Paste From LaTeX"),
+    answerFormatContainer
+  );
 
   document.body.appendChild(aiTooltip);
   return aiTooltip;
