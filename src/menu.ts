@@ -26,6 +26,32 @@ export function createMenuIntegration({
   describeSolverError: (error: unknown) => string;
 }) {
   return {
+    fitMenuToViewport(menuContainer: Element, menus: Element): void {
+      if (!(menuContainer instanceof HTMLElement)) return;
+
+      window.requestAnimationFrame(() => {
+        const margin = 8;
+        const maxHeight = Math.max(160, window.innerHeight - margin * 2);
+        menuContainer.style.maxHeight = `${maxHeight}px`;
+        menuContainer.style.overflowY = "auto";
+
+        if (menus instanceof HTMLElement) {
+          menus.style.maxHeight = "none";
+        }
+
+        const rect = menuContainer.getBoundingClientRect();
+        const overflowBottom = rect.bottom - (window.innerHeight - margin);
+        const overflowTop = margin - rect.top;
+        const currentTop = Number.parseFloat(menuContainer.style.top || "0");
+
+        if (overflowBottom > 0) {
+          menuContainer.style.top = `${Math.max(margin, currentTop - overflowBottom)}px`;
+        } else if (overflowTop > 0) {
+          menuContainer.style.top = `${currentTop + overflowTop}px`;
+        }
+      });
+    },
+
     createMenuItem(text: string, shortcut: string, onClick: (() => void | Promise<void>) | null): HTMLElement {
       const item = document.createElement("ct-item");
       item.className = "clipboard";
@@ -150,6 +176,8 @@ export function createMenuIntegration({
       items.forEach((item) => {
         menus.appendChild(this.createMenuItem(item.text, item.shortcut, item.handler));
       });
+
+      this.fitMenuToViewport(menuContainer, menus);
     }
   };
 }

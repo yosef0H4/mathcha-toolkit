@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mathcha Toolkit
 // @namespace    http://tampermonkey.net/
-// @version      3
+// @version      3.1
 // @description  Calculator, LaTeX, and AI workflow tools for Mathcha.io
 // @author       Your name
 // @match        https://*.mathcha.io/*
@@ -14,7 +14,7 @@
 "use strict";
 (() => {
   // src/config.ts
-  var SCRIPT_VERSION = "3";
+  var SCRIPT_VERSION = "3.1";
   var PYODIDE_VERSION = "0.29.3";
   var PYODIDE_INDEX_URL = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
   var PYODIDE_SCRIPT_URL = `${PYODIDE_INDEX_URL}pyodide.js`;
@@ -109,6 +109,27 @@
     describeSolverError: describeSolverError2
   }) {
     return {
+      fitMenuToViewport(menuContainer, menus) {
+        if (!(menuContainer instanceof HTMLElement)) return;
+        window.requestAnimationFrame(() => {
+          const margin = 8;
+          const maxHeight = Math.max(160, window.innerHeight - margin * 2);
+          menuContainer.style.maxHeight = `${maxHeight}px`;
+          menuContainer.style.overflowY = "auto";
+          if (menus instanceof HTMLElement) {
+            menus.style.maxHeight = "none";
+          }
+          const rect = menuContainer.getBoundingClientRect();
+          const overflowBottom = rect.bottom - (window.innerHeight - margin);
+          const overflowTop = margin - rect.top;
+          const currentTop = Number.parseFloat(menuContainer.style.top || "0");
+          if (overflowBottom > 0) {
+            menuContainer.style.top = `${Math.max(margin, currentTop - overflowBottom)}px`;
+          } else if (overflowTop > 0) {
+            menuContainer.style.top = `${currentTop + overflowTop}px`;
+          }
+        });
+      },
       createMenuItem(text, shortcut, onClick) {
         const item = document.createElement("ct-item");
         item.className = "clipboard";
@@ -221,6 +242,7 @@
         items.forEach((item) => {
           menus.appendChild(this.createMenuItem(item.text, item.shortcut, item.handler));
         });
+        this.fitMenuToViewport(menuContainer, menus);
       }
     };
   }
