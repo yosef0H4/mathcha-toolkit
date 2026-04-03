@@ -37,7 +37,7 @@ The AI showcase highlights the prompt handoff flow for selected Mathcha content,
 - Grok
 - Mistral Le Chat
 
-These links are configured in [`src/config.ts`](/Z:/files/projects/js/mathcha enhancer/src/config.ts).
+These links are configured in [src/config.ts](src/config.ts).
 
 ## Shortcuts
 
@@ -75,10 +75,10 @@ npm run pw:install
 npm run pw:analyze
 ```
 
-The userscript bundle is produced at [dist/mathcha-toolkit.user.js](/dist/mathcha-toolkit.user.js).
+The userscript bundle is produced at [dist/mathcha-toolkit.user.js](dist/mathcha-toolkit.user.js).
 
 ## Notes
 
 - The script only activates on `https://*.mathcha.io/*`.
 - Some external AI links are best-effort and may change over time.
-- Playwright helpers and runtime investigation notes live under [playwright](/playwright) and [docs/mathcha-runtime-notes.md](/docs/mathcha-runtime-notes.md).
+- Playwright helpers and runtime investigation notes live under [playwright](playwright) and [docs/mathcha-runtime-notes.md](docs/mathcha-runtime-notes.md).
