@@ -2,6 +2,20 @@
 
 Mathcha Toolkit is a Tampermonkey userscript for `mathcha.io` that adds a faster solve, import, export, and AI-assisted workflow on top of the editor.
 
+## Showcase
+
+### Python Solver
+
+The Python showcase highlights the local in-browser solver path for expressions that evaluate cleanly with Pyodide, SymPy, and `latex2sympy2-extended`, including integrals, limits, derivatives, sums, products, and matrix operations.
+
+![Python solver showcase](showcase/python.webp)
+
+### AI Workflow
+
+The AI showcase highlights the prompt handoff flow for selected Mathcha content, where the toolkit sends the current selection to one of the supported AI services for open-ended analysis or solving.
+
+![AI workflow showcase](showcase/ai.webp)
+
 ## Features
 
 - Copy selected Mathcha content as LaTeX.
