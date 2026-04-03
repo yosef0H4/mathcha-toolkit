@@ -83,6 +83,16 @@ The userscript bundle is available at [mathcha-toolkit.user.js](https://github.c
 - Some external AI links are best-effort and may change over time.
 - Playwright helpers and runtime investigation notes live under [playwright](playwright) and [docs/mathcha-runtime-notes.md](docs/mathcha-runtime-notes.md).
 
-## Thanks
+## Credits
+
+Mathcha Toolkit is an integration project built on top of other excellent tools.
 
 Credit to the Mathcha team for building Mathcha. This project would not exist without a strong browser-based LaTeX editor to build around.
+
+Credit to the Pyodide project for making it possible to run Python directly in the browser.
+
+Credit to the SymPy project for the symbolic math engine used by the local solver.
+
+Credit to the `latex2sympy2-extended` project for LaTeX-to-SymPy conversion, which makes the browser solver workflow practical.
+
+This project mainly focuses on connecting these pieces into a faster workflow inside Mathcha.
