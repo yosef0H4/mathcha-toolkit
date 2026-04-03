@@ -75,7 +75,7 @@ npm run pw:install
 npm run pw:analyze
 ```
 
-The userscript bundle is produced at [dist/mathcha-toolkit.user.js](dist/mathcha-toolkit.user.js).
+The userscript bundle is available at [mathcha-toolkit.user.js](https://github.com/yosef0H4/mathcha-toolkit/releases/latest/download/mathcha-toolkit.user.js).
 
 ## Notes
 
