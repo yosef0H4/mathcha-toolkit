@@ -426,11 +426,11 @@ validation_result
     await ensurePersistentFs(pyodide);
     await ensurePersistentImports(pyodide);
 
-    notify("Loading core math packages...");
-    await pyodide.loadPackage(["mpmath", "sympy"]);
-
     if (!solverPromise) {
       solverPromise = (async () => {
+        notify("Loading core math packages...");
+        await pyodide.loadPackage(["mpmath", "sympy"]);
+
         const cacheState = await readCacheState(pyodide);
         let cachedSolver = cacheState.status === "ready" && hasPersistedSolverFiles(pyodide);
 
@@ -534,6 +534,7 @@ def mathcha_solve_latex(input_latex):
     },
 
     async solveLatex(latexInput: string): Promise<SolverResult> {
+      notify("Solving...");
       const pyodide = await ensureSolver();
       const globals = pyodide.globals as unknown as {
         set: (key: string, value: unknown) => void;
