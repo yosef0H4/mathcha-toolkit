@@ -82,3 +82,7 @@ The userscript bundle is available at [mathcha-toolkit.user.js](https://github.c
 - The script only activates on `https://*.mathcha.io/*`.
 - Some external AI links are best-effort and may change over time.
 - Playwright helpers and runtime investigation notes live under [playwright](playwright) and [docs/mathcha-runtime-notes.md](docs/mathcha-runtime-notes.md).
+
+## Thanks
+
+Credit to the Mathcha team for building Mathcha. This project would not exist without a strong browser-based LaTeX editor to build around.
