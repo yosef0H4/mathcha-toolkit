@@ -1,7 +1,7 @@
 import type { AnswerFormatKey, AppConfig } from "./types";
 import { getPlatform } from "./platform";
 
-export const SCRIPT_VERSION = "3.2";
+export const SCRIPT_VERSION = "3.3";
 export const PYODIDE_VERSION = "0.29.3";
 export const PYODIDE_INDEX_URL = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
 export const PYODIDE_SCRIPT_URL = `${PYODIDE_INDEX_URL}pyodide.js`;
