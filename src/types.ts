@@ -3,6 +3,7 @@ import type { PyodideInterface } from "pyodide";
 export type AiServiceKey = "claude" | "chatgpt" | "google" | "youcom" | "perplexity" | "grok" | "mistral";
 export type CommandKey = "copyLatex" | "analyze" | "symbolab" | "answer" | "pasteFromLatex";
 export type AnswerFormatKey = "fraction" | "decimal" | "mixed";
+export type AnswerInsertModeKey = "append" | "replace";
 
 export type LoadPyodide = typeof import("pyodide").loadPyodide;
 
@@ -31,6 +32,7 @@ export type AppConfig = {
   aiServices: Record<AiServiceKey, AiService>;
   solver: {
     defaultAnswerFormat: AnswerFormatKey;
+    defaultAnswerInsertMode: AnswerInsertModeKey;
     decimalPlaces: number;
   };
 };
@@ -41,6 +43,8 @@ export type SolverInput = {
   hasEquationTail: boolean;
   isWrappedMathSelection: boolean;
   targetBase: number | null;
+  selectionStart: unknown | null;
+  selectionEnd: unknown | null;
 };
 
 export type SolverResult = {
@@ -73,7 +77,15 @@ export type PythonRuntime = {
 export type MathchaRuntime = {
   logRuntime(step: string, details?: Record<string, unknown>): void;
   extractSelectedLatexForSolver(): Promise<SolverInput>;
-  insertMathAtSelectionEnd(latex: string, options?: { forceMathMode?: boolean }): Promise<void>;
+  insertMathAtSelection(
+    latex: string,
+    options?: {
+      forceMathMode?: boolean;
+      replaceSelection?: boolean;
+      selectionStart?: unknown | null;
+      selectionEnd?: unknown | null;
+    }
+  ): Promise<void>;
   importFromLatexClipboard(): Promise<string>;
   copyToClipboard(): Promise<string>;
 };

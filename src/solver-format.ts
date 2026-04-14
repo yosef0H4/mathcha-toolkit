@@ -1,5 +1,5 @@
 import { answerFormatLabels, config } from "./config";
-import type { AnswerFormatKey, SolverInput, SolverResult } from "./types";
+import type { AnswerFormatKey, AnswerInsertModeKey, SolverInput, SolverResult } from "./types";
 
 export { answerFormatLabels };
 
@@ -128,8 +128,13 @@ export const formatSolverResult = (
   };
 };
 
-export const buildInsertedAnswerLatex = (solverInput: SolverInput, formattedAnswer: string): string => {
-  const rawInsertionLatex = `${solverInput.hasEquationTail ? "" : "="}${formattedAnswer}`;
+export const buildInsertedAnswerLatex = (
+  solverInput: SolverInput,
+  formattedAnswer: string,
+  insertMode: AnswerInsertModeKey
+): string => {
+  const rawInsertionLatex =
+    insertMode === "replace" ? formattedAnswer : `${solverInput.hasEquationTail ? "" : "="}${formattedAnswer}`;
   return solverInput.isWrappedMathSelection ? "$" + rawInsertionLatex + "$" : rawInsertionLatex;
 };
 

@@ -21,8 +21,9 @@ The AI showcase highlights the prompt handoff flow for selected Mathcha content,
 - Copy selected Mathcha content as LaTeX.
 - Import LaTeX back into Mathcha.
 - Solve the selected expression with an in-browser Python runtime powered by Pyodide and SymPy.
-- Insert formatted answers directly at the current Mathcha selection.
+- Insert formatted answers directly at the current Mathcha selection, either by appending `=[answer]` or replacing the selection outright.
 - Cycle answer formats between exact fraction, decimal, and mixed number.
+- Toggle Python answer insertion between append and replace-selection modes from the tooltip or context menu.
 - Convert integer results to another base using syntax like `\rightarrow _{2}`.
 - Open the current selection in external tools and chat apps.
 - Open Symbolab for step-by-step solving.
@@ -48,6 +49,8 @@ Hold `Ctrl+Alt` to show the shortcut tooltip inside Mathcha.
 - `.` open in Symbolab
 - `/` solve with Python and insert the answer
 - `,` paste from LaTeX
+
+Use the tooltip or custom context-menu items to switch the Python solver between **Append =answer** and **Replace selection** modes.
 
 ## How It Works
 

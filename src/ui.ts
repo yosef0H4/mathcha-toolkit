@@ -1,5 +1,5 @@
 import type { MathJaxConfig, NotifyFn } from "./types";
-import { answerFormatLabels, config, getAnswerFormat } from "./config";
+import { answerFormatLabels, answerInsertModeLabels, config, getAnswerFormat, getAnswerInsertMode } from "./config";
 
 export function loadMathJax(): Promise<void> {
   if (window.MathJax) return Promise.resolve();
@@ -92,6 +92,15 @@ export function createTooltip(): HTMLDivElement {
   formatLabel.textContent = answerFormatLabels[getAnswerFormat()];
   answerFormatContainer.appendChild(formatLabel);
 
+  const insertModeContainer = document.createElement("div");
+  insertModeContainer.style.margin = "8px 0 0";
+  insertModeContainer.append(document.createTextNode("Answer insert mode: "));
+
+  const insertModeLabel = document.createElement("strong");
+  insertModeLabel.dataset.answerInsertModeLabel = "";
+  insertModeLabel.textContent = answerInsertModeLabels[getAnswerInsertMode()];
+  insertModeContainer.appendChild(insertModeLabel);
+
   aiTooltip.append(
     title,
     createShortcutRow(config.aiShortcuts.copyLatex, "Copy LaTeX"),
@@ -99,16 +108,22 @@ export function createTooltip(): HTMLDivElement {
     createShortcutRow(config.aiShortcuts.symbolab, "Open in Symbolab"),
     createShortcutRow(config.aiShortcuts.answer, "Solve with Python"),
     createShortcutRow(config.aiShortcuts.pasteFromLatex, "Paste From LaTeX"),
-    answerFormatContainer
+    answerFormatContainer,
+    insertModeContainer
   );
 
   document.body.appendChild(aiTooltip);
   return aiTooltip;
 }
 
-export function updateAnswerFormatUi(tooltip: HTMLDivElement | null): void {
+export function updateSolverUi(tooltip: HTMLDivElement | null): void {
   const formatLabel = tooltip?.querySelector<HTMLElement>("[data-answer-format-label]");
   if (formatLabel) {
     formatLabel.textContent = answerFormatLabels[getAnswerFormat()];
+  }
+
+  const insertModeLabel = tooltip?.querySelector<HTMLElement>("[data-answer-insert-mode-label]");
+  if (insertModeLabel) {
+    insertModeLabel.textContent = answerInsertModeLabels[getAnswerInsertMode()];
   }
 }

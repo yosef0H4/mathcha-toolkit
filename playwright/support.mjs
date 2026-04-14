@@ -800,6 +800,7 @@ export async function appendMathAtSelectionEnd(page, insertionLatex, options = {
   const {
     waitAfterSelectionMs = 50,
     waitAfterInsertMs = 300,
+    replaceSelection = false,
     selectionStart = {
       key: "mathValue",
       selected: {
@@ -825,7 +826,7 @@ export async function appendMathAtSelectionEnd(page, insertionLatex, options = {
   } = options;
 
   return page.evaluate(
-    async ({ inputLatex, startSelection, endSelection, selectionDelay, insertDelay }) => {
+    async ({ inputLatex, startSelection, endSelection, selectionDelay, insertDelay, replaceSelectedMath }) => {
       const stabilizeImportDialogTextArea = () => {
         const walkNode = (node, visited, depth = 0) => {
           if (!node || typeof node !== "object" || visited.has(node) || depth > 10) {
@@ -902,7 +903,11 @@ export async function appendMathAtSelectionEnd(page, insertionLatex, options = {
 
       const selectedBefore = handler.getSelectedLatex?.("latex-latex", false) ?? "";
       const before = JSON.stringify(editor.state?.mainModel ?? null);
-      editor.setSelected?.(endSelection);
+      if (replaceSelectedMath) {
+        editor.setSelection?.(startSelection, endSelection);
+      } else {
+        editor.setSelected?.(endSelection);
+      }
       await new Promise((resolve) => setTimeout(resolve, selectionDelay));
 
       handler.showImportFromLatex();
@@ -977,7 +982,8 @@ export async function appendMathAtSelectionEnd(page, insertionLatex, options = {
       startSelection: selectionStart,
       endSelection: selectionEnd,
       selectionDelay: waitAfterSelectionMs,
-      insertDelay: waitAfterInsertMs
+      insertDelay: waitAfterInsertMs,
+      replaceSelectedMath: replaceSelection
     }
   );
 }

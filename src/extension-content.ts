@@ -15,7 +15,7 @@ const extensionBrowserApi = ((globalThis as Record<string, unknown>).browser ??
 };
 
 const CHANNEL = "mathcha-toolkit-extension";
-const STORAGE_KEYS = ["answerFormat", "lastPrompt", "lastAiService"];
+const STORAGE_KEYS = ["answerFormat", "answerInsertMode", "lastPrompt", "lastAiService"];
 
 const storageGet = async (keys: string[]): Promise<Record<string, unknown>> => {
   const storage = extensionBrowserApi.storage?.local;

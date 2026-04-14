@@ -1,4 +1,12 @@
-import { answerFormatLabels, config, cycleAnswerFormat, getAnswerFormat } from "./config";
+import {
+  answerFormatLabels,
+  answerInsertModeLabels,
+  config,
+  cycleAnswerFormat,
+  cycleAnswerInsertMode,
+  getAnswerFormat,
+  getAnswerInsertMode
+} from "./config";
 import type { AiServiceKey, LogFn, MathchaRuntime, NotifyFn, SolveAndInsertAnswer } from "./types";
 import { getPlatform } from "./platform";
 
@@ -10,7 +18,7 @@ export function createMenuIntegration({
   notify,
   services,
   solveAndInsertAnswer,
-  updateAnswerFormatUi,
+  updateSolverUi,
   describeSolverError
 }: {
   aiTooltip: HTMLDivElement;
@@ -23,7 +31,7 @@ export function createMenuIntegration({
     symbolab: (latex: string) => void;
   };
   solveAndInsertAnswer: SolveAndInsertAnswer;
-  updateAnswerFormatUi: (tooltip: HTMLDivElement | null) => void;
+  updateSolverUi: (tooltip: HTMLDivElement | null) => void;
   describeSolverError: (error: unknown) => string;
 }) {
   return {
@@ -117,8 +125,17 @@ export function createMenuIntegration({
           shortcut: "",
           handler: async () => {
             const nextFormat = cycleAnswerFormat();
-            updateAnswerFormatUi(aiTooltip);
+            updateSolverUi(aiTooltip);
             notify(`Answer format: ${answerFormatLabels[nextFormat]}`);
+          }
+        },
+        {
+          text: `Answer Insert Mode: ${answerInsertModeLabels[getAnswerInsertMode()]}`,
+          shortcut: "",
+          handler: async () => {
+            const nextMode = cycleAnswerInsertMode();
+            updateSolverUi(aiTooltip);
+            notify(`Answer insert mode: ${answerInsertModeLabels[nextMode]}`);
           }
         },
         {

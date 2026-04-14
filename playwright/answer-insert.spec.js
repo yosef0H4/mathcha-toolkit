@@ -10,7 +10,7 @@ import {
   writeArtifacts
 } from "./support.mjs";
 
-async function runAnswerInsertScenario(page, context, insertionLatex) {
+async function runAnswerInsertScenario(page, context, insertionLatex, options = {}) {
   const probeState = createProbeState();
   const activeDocumentCapture = createActiveDocumentCapture();
   const pageErrors = [];
@@ -23,7 +23,7 @@ async function runAnswerInsertScenario(page, context, insertionLatex) {
   const networkCapture = await wireNetworkCapture(page, probeState, activeDocumentCapture);
   await prepareMathchaPage(page, context);
 
-  const result = await appendMathAtSelectionEnd(page, insertionLatex);
+  const result = await appendMathAtSelectionEnd(page, insertionLatex, options);
 
   await networkCapture.flush();
   const runtimeProbe = await readRuntimeProbe(page);
@@ -37,7 +37,7 @@ async function runAnswerInsertScenario(page, context, insertionLatex) {
   };
 }
 
-test("appends exact fraction answers after the selected math instead of replacing it", async ({ page, context }) => {
+test("append mode keeps the selected math and adds exact fraction answers after it", async ({ page, context }) => {
   const { probeState, activeDocumentCapture, result, runtimeProbe, pageErrors } = await runAnswerInsertScenario(
     page,
     context,
@@ -101,5 +101,20 @@ test("appends mixed-number answers as parser-safe sum math", async ({ page, cont
   expect(result.targetLineHasEquals).toBeTruthy();
   expect(result.combinedTargetLineText).toContain("1");
   expect(result.afterModelJson).toContain("\\frac");
+  expect(pageErrors).toEqual([]);
+});
+
+test("replace mode overwrites the selected math with the computed answer", async ({ page, context }) => {
+  const { result, pageErrors } = await runAnswerInsertScenario(page, context, "\\frac{3}{2}", {
+    replaceSelection: true
+  });
+
+  expect(result.ok).toBeTruthy();
+  expect(result.changed).toBeTruthy();
+  expect(result.dialogStillOpen).toBeFalsy();
+  expect(result.selectedBefore).toBe("F");
+  expect(result.afterModelJson).toContain("\\frac");
+  expect(result.combinedTargetLineText).toContain("\\overrightarrow\\frac32 = m");
+  expect(result.combinedTargetLineText).not.toContain("\\overrightarrowF = m");
   expect(pageErrors).toEqual([]);
 });

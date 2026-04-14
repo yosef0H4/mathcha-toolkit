@@ -1,4 +1,4 @@
-import { SCRIPT_VERSION, config, getAnswerFormat } from "./config";
+import { SCRIPT_VERSION, answerInsertModeLabels, config, getAnswerFormat, getAnswerInsertMode } from "./config";
 import { createMenuIntegration } from "./menu";
 import { createPythonRuntime } from "./python-runtime";
 import {
@@ -10,7 +10,7 @@ import {
 } from "./solver-format";
 import { createServices } from "./services";
 import type { AiServiceKey, CommandKey, LogFn, MathchaRuntime, PyodideWindow, SolverInput } from "./types";
-import { createTooltip, createNotifier, loadMathJax, updateAnswerFormatUi } from "./ui";
+import { createTooltip, createNotifier, loadMathJax, updateSolverUi } from "./ui";
 import { getPlatform } from "./platform";
 
 export {};
@@ -462,6 +462,7 @@ export function bootstrapMathchaToolkit(): void {
         throw new Error("No runtime LaTeX selection available for solver");
       }
 
+      const selectionRange = this.getCurrentSelectionRange(this.getEditorInstance());
       const hasEquationTail = this.hasEquationTail(rawLatex);
       const isWrappedMathSelection = this.isWrappedMathSelection(rawLatex);
       const normalizedResult = this.normalizeLatexForSolver(rawLatex);
@@ -470,14 +471,18 @@ export function bootstrapMathchaToolkit(): void {
         normalizedPreview: normalizedResult.normalized.slice(0, 120),
         hasEquationTail,
         isWrappedMathSelection,
-        targetBase: normalizedResult.targetBase
+        targetBase: normalizedResult.targetBase,
+        hasSelectionStart: Boolean(selectionRange.start),
+        hasSelectionEnd: Boolean(selectionRange.end)
       });
       return {
         raw: rawLatex,
         normalized: normalizedResult.normalized,
         hasEquationTail,
         isWrappedMathSelection,
-        targetBase: normalizedResult.targetBase
+        targetBase: normalizedResult.targetBase,
+        selectionStart: selectionRange.start,
+        selectionEnd: selectionRange.end
       };
     },
 
@@ -630,7 +635,7 @@ export function bootstrapMathchaToolkit(): void {
       return null;
     },
 
-    getInsertionTargetSelection(
+    getCurrentSelectionRange(
       editor:
         | {
             getContainerModel?: () => {
@@ -639,33 +644,53 @@ export function bootstrapMathchaToolkit(): void {
             };
           }
         | null
-    ): unknown | null {
+    ): { start: unknown | null; end: unknown | null } {
       const containerModel = editor?.getContainerModel?.();
-      const insertionTarget = containerModel?.extendedCursorSelected ?? containerModel?.cursorSelected ?? null;
-      this.logRuntime("getInsertionTargetSelection:resolved", {
+      const start = containerModel?.cursorSelected ?? null;
+      const end = containerModel?.extendedCursorSelected ?? null;
+      this.logRuntime("getCurrentSelectionRange:resolved", {
         hasCursorSelected: Boolean(containerModel?.cursorSelected),
         hasExtendedCursorSelected: Boolean(containerModel?.extendedCursorSelected),
-        insertionTarget: insertionTarget ? this.summarizeValue(insertionTarget) : null
+        start: start ? this.summarizeValue(start) : null,
+        end: end ? this.summarizeValue(end) : null
       });
-      return insertionTarget;
+      return { start, end };
     },
 
-    async insertMathAtSelectionEnd(latex: string, options?: { forceMathMode?: boolean }): Promise<void> {
+    async insertMathAtSelection(
+      latex: string,
+      options?: {
+        forceMathMode?: boolean;
+        replaceSelection?: boolean;
+        selectionStart?: unknown | null;
+        selectionEnd?: unknown | null;
+      }
+    ): Promise<void> {
       const forceMathMode = options?.forceMathMode ?? true;
+      const replaceSelection = options?.replaceSelection ?? false;
       const editor = this.getEditorInstance();
       const latexIoHandler = this.getLatexIoHandler(editor);
       if (!editor || !latexIoHandler || typeof latexIoHandler.showImportFromLatex !== "function") {
         throw new Error("Mathcha insert handler is unavailable");
       }
 
-      const insertionTarget = this.getInsertionTargetSelection(editor);
+      const currentSelectionRange = this.getCurrentSelectionRange(editor);
+      const selectionRange = {
+        start: options?.selectionStart ?? currentSelectionRange.start,
+        end: options?.selectionEnd ?? currentSelectionRange.end
+      };
+      const insertionTarget = selectionRange.end ?? selectionRange.start ?? null;
       if (!insertionTarget || typeof editor.setSelected !== "function") {
         throw new Error("Unable to resolve insertion point from current selection");
       }
 
       editor.setCursorInputFocus?.(true);
       editor.setCursorMathTypeFocus?.(true);
-      editor.setSelected(insertionTarget);
+      if (replaceSelection && selectionRange.start && selectionRange.end && typeof editor.setSelection === "function") {
+        editor.setSelection(selectionRange.start, selectionRange.end);
+      } else {
+        editor.setSelected(insertionTarget);
+      }
       await new Promise<void>((resolve) => setTimeout(resolve, 30));
 
       const beforeModel = this.getEditorModelFingerprint(editor as Record<string, unknown> | null);
@@ -678,8 +703,9 @@ export function bootstrapMathchaToolkit(): void {
 
       const parsed = this.parseLatexWithRuntime(dialogElement, latex, { forceMathMode });
       const payload = this.buildImportPayload(dialogElement, parsed, { forceMathMode });
-      this.logRuntime("insertMathAtSelectionEnd:parsed", {
+      this.logRuntime("insertMathAtSelection:parsed", {
         latexPreview: latex.slice(0, 120),
+        replaceSelection,
         effectiveMathMode: forceMathMode || dialogElement.props?.forMathMode || false,
         payloadKind: Array.isArray(payload) ? "lines" : typeof payload
       });
@@ -696,8 +722,9 @@ export function bootstrapMathchaToolkit(): void {
         throw new Error("Mathcha insert did not change the editor");
       }
 
-      this.logRuntime("insertMathAtSelectionEnd:complete", {
+      this.logRuntime("insertMathAtSelection:complete", {
         changed: beforeModel !== afterModel,
+        replaceSelection,
         dialogStillOpen: Boolean(document.querySelector(".import-latex"))
       });
     },
@@ -1098,19 +1125,22 @@ export function bootstrapMathchaToolkit(): void {
     log("LaTeX extracted:", solverInput.normalized);
 
     const answerFormat = getAnswerFormat();
+    const answerInsertMode = getAnswerInsertMode();
     const solverResult = await pythonRuntime.solveLatex(solverInput.normalized);
     const formatted =
       solverInput.targetBase !== null
         ? formatBaseConvertedResult(solverResult, solverInput.targetBase)
         : formatSolverResult(solverResult, answerFormat);
-    const insertionLatex = buildInsertedAnswerLatex(solverInput, formatted.latex);
+    const insertionLatex = buildInsertedAnswerLatex(solverInput, formatted.latex, answerInsertMode);
 
     log(
       "Selected answer format:",
       solverInput.targetBase !== null ? `Base ${solverInput.targetBase}` : answerFormatLabels[answerFormat]
     );
+    log("Selected answer insert mode:", answerInsertModeLabels[answerInsertMode]);
     mathcha.logRuntime("solveAndInsertAnswer:formatted", {
       answerFormat,
+      answerInsertMode,
       targetBase: solverInput.targetBase,
       baseOverride: solverInput.targetBase !== null,
       fallbackReason: formatted.fallbackReason,
@@ -1120,14 +1150,18 @@ export function bootstrapMathchaToolkit(): void {
     });
     log("Formatted answer:", insertionLatex);
 
-    await mathcha.insertMathAtSelectionEnd(insertionLatex, {
-      forceMathMode: !solverInput.isWrappedMathSelection
+    await mathcha.insertMathAtSelection(insertionLatex, {
+      forceMathMode: !solverInput.isWrappedMathSelection,
+      replaceSelection: answerInsertMode === "replace",
+      selectionStart: solverInput.selectionStart,
+      selectionEnd: solverInput.selectionEnd
     });
 
+    const actionText = answerInsertMode === "replace" ? "replaced selection" : "inserted";
     if (formatted.fallbackReason) {
-      notify(`Answer inserted using exact format fallback (${answerFormatLabels[answerFormat]})`);
+      notify(`Answer ${actionText} using exact format fallback (${answerFormatLabels[answerFormat]})`);
     } else {
-      notify(`Answer inserted: ${insertionLatex}`);
+      notify(`Answer ${actionText}: ${insertionLatex}`);
     }
 
     return insertionLatex;
@@ -1142,7 +1176,7 @@ export function bootstrapMathchaToolkit(): void {
     notify,
     services,
     solveAndInsertAnswer,
-    updateAnswerFormatUi,
+    updateSolverUi,
     describeSolverError
   });
 

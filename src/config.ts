@@ -1,7 +1,7 @@
-import type { AnswerFormatKey, AppConfig } from "./types";
+import type { AnswerFormatKey, AnswerInsertModeKey, AppConfig } from "./types";
 import { getPlatform } from "./platform";
 
-export const SCRIPT_VERSION = "3.3";
+export const SCRIPT_VERSION = "3.4.0";
 export const PYODIDE_VERSION = "0.29.3";
 export const PYODIDE_INDEX_URL = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
 export const PYODIDE_SCRIPT_URL = `${PYODIDE_INDEX_URL}pyodide.js`;
@@ -60,15 +60,21 @@ export const config: AppConfig = {
   },
   solver: {
     defaultAnswerFormat: "fraction",
+    defaultAnswerInsertMode: "append",
     decimalPlaces: 6
   }
 };
 
 export const ANSWER_FORMAT_STORAGE_KEY = "answerFormat";
+export const ANSWER_INSERT_MODE_STORAGE_KEY = "answerInsertMode";
 export const answerFormatLabels: Record<AnswerFormatKey, string> = {
   fraction: "Exact Fraction",
   decimal: "Decimal",
   mixed: "Mixed Number"
+};
+export const answerInsertModeLabels: Record<AnswerInsertModeKey, string> = {
+  append: "Append =answer",
+  replace: "Replace selection"
 };
 
 export const getAnswerFormat = (): AnswerFormatKey => {
@@ -82,10 +88,27 @@ export const setAnswerFormat = (format: AnswerFormatKey): void => {
   getPlatform().setValue(ANSWER_FORMAT_STORAGE_KEY, format);
 };
 
+export const getAnswerInsertMode = (): AnswerInsertModeKey => {
+  const stored = getPlatform().getValue(ANSWER_INSERT_MODE_STORAGE_KEY, config.solver.defaultAnswerInsertMode);
+  return stored === "append" || stored === "replace" ? stored : config.solver.defaultAnswerInsertMode;
+};
+
+export const setAnswerInsertMode = (mode: AnswerInsertModeKey): void => {
+  getPlatform().setValue(ANSWER_INSERT_MODE_STORAGE_KEY, mode);
+};
+
 export const cycleAnswerFormat = (): AnswerFormatKey => {
   const formats: AnswerFormatKey[] = ["fraction", "decimal", "mixed"];
   const current = getAnswerFormat();
   const next = formats[(formats.indexOf(current) + 1) % formats.length];
   setAnswerFormat(next);
+  return next;
+};
+
+export const cycleAnswerInsertMode = (): AnswerInsertModeKey => {
+  const modes: AnswerInsertModeKey[] = ["append", "replace"];
+  const current = getAnswerInsertMode();
+  const next = modes[(modes.indexOf(current) + 1) % modes.length];
+  setAnswerInsertMode(next);
   return next;
 };
